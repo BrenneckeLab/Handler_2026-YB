@@ -21,9 +21,10 @@ R-Notebook files are deposited in this repository in code format and pdf after k
 
 ## Repositories related to the figures presented in the publication
 
-Collection of scripts and tools used to evaluate the quality and features of the OSC genome:
+---
+Collection of scripts to analyze the nucleotide bias in transposable elements:
 
-https://github.com/BrenneckeLab/Evaluate_OSC_Genome
+https://github.com/RippeiHayashi/Yb_2026
 
 
 ---
