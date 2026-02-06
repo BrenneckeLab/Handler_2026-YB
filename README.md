@@ -21,6 +21,10 @@ R-Notebook files are deposited in this repository in code format and pdf after k
 
 ## Repositories related to the figures presented in the publication
 
+Scripts for analyzing piRNA biogenesis sensor libraries
+
+https://github.com/BrenneckeLab/Handler_2026-YB_sensorAnalysis
+
 ---
 Collection of scripts to analyze the nucleotide bias in transposable elements:
 
