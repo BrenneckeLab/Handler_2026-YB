@@ -1,0 +1,2283 @@
+
+---
+title: "Fig-2 - A Naïve RNA Sampling Core Enables Adaptive piRNA Specificity Against Transposable Elements - 2026-02"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+date: "2026-02-07"
+---
+
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if (knitr::is_latex_output()) {
+  MODE <- "PDF"
+} else if (knitr::is_html_output()) {
+  MODE <- "HTML"
+} else {
+  MODE <- "OTHER"
+}
+
+print(MODE)
+```
+
+
+
+load all packages required
+```{r load-packages, echo=TRUE, message=FALSE, warning=FALSE}
+library(cowplot)
+library(ggforce)
+library(ggpubr)
+library(ggrepel)
+library(knitr)
+library(paletteer)
+library(ggalt)
+library(plotly)
+library(ggbeeswarm)
+library(scico)
+library(cividis)
+library(ggrastr)
+library(mgcv)  # For fitting GAM model
+library(tools)
+library(Metrics)
+library(DescTools)
+library(tidyverse)
+library(ggrastr)
+
+
+theme_set(theme_cowplot(12))
+
+```
+
+
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ###########################   100nt tiles - YBdependency  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+## load and prepare data
+```{r 100nt tiles - load data and prepare RAW table, message=FALSE,warning=FALSE}
+ # load data
+RAW = read_tsv("YBdep_tiles.100_0_100.txt", col_names = TRUE)%>%
+  #remove lost YB library
+  select(-contains("243686"))%>%
+  separate(CHR,c("ID","TYPE"), sep="_",remove=FALSE)%>%
+  {}
+```
+
+## process and filter data
+
+```{r 100nt tiles - YBdependency - process and pre-filter data, message=FALSE,warning=FALSE, fig.width = 6 ,fig.height = 6}
+# filter data
+TABLEfilt= RAW %>%
+  filter(TYPE == "UTR" )%>%
+  select(-contains("ARMI"))%>%
+  #filters implemented for the study
+  filter(UNIQ > 50, RNAseq_RPKM>5 ) %>%
+  {}
+
+nLINES=nrow(TABLEfilt)
+
+
+#calculate RNAseq/TTseq corrected smallRNA and CLIP counts
+TABLEfilt <- TABLEfilt %>%
+  mutate(
+    across(
+      starts_with(c("sRNAdata_")),
+      ~.x / TTseq_RPKM,
+      .names = "TTnorm_{.col}"
+    ),
+    across(
+      starts_with(c("sRNAdata_")),
+      ~.x / RNAseq_RPKM,
+      .names = "RNAnorm_{.col}"
+    ),
+    across(
+      starts_with(c("CLIP_")),
+      ~.x / RNAseq_RPKM,
+      .names = "RNAnorm_{.col}"
+    )
+  )
+
+
+#calculate YB-dependency
+TABLEfilt <- TABLEfilt %>%
+  mutate(
+    YBdependency = `sRNAdata_average-WT`/`sRNAdata_average-YB`,
+    YB_foldChange = `sRNAdata_average-YB` / `sRNAdata_average-WT`
+    )%>%
+  filter(!is.na(YBdependency))
+
+```
+
+## correlation between 100nt tiles and YB-CLIP
+
+### scatter-plot YB-dependency vs CLIP
+```{r 100nt tiles - YBdependency  - plot YB-dependency vs CLIP - scatter, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+plotTABLEorig = TABLEfilt %>% 
+  select(-contains("sRNAdata_average-ARMI"))%>%
+  filter(RNAnorm_CLIP_CLIP_YB.all > 0.0005, if_all(starts_with("sRNAdata_average"), ~ . > 10) )%>%
+  mutate(
+    BIN2 =  as.factor(cut_interval(log10(YBdependency), n=4, labels = FALSE))
+  )%>%
+  {}
+
+# Get bin breakpoints
+bin_breaks <- plotTABLEorig %>%
+  group_by(BIN2) %>%
+  summarise(min_YBdep = min(YBdependency, na.rm = TRUE)) %>%
+  pull(min_YBdep)
+
+# Remove first bin (we don’t need a line at the lowest boundary)
+bin_breaks <- sort(bin_breaks[-1])
+
+#determine number per bin
+count_data <- plotTABLEorig %>%
+  group_by(BIN2) %>%
+  summarise(n = n())
+
+
+#copy table to allow modifying the data
+plotTABLEclip = plotTABLEorig
+
+# Compute Kendall correlation
+cor_test <- cor.test(plotTABLEclip$YBdependency, plotTABLEclip$RNAnorm_CLIP_CLIP_YB.all, method = "kendall")
+
+#create statistics
+# Extract correlation and p-value
+cor_value_kendall <- round(cor_test$estimate, 3)
+p_value_kendall <- formatC(cor_test$p.value, format = "e", digits = 2)  # Scientific notation
+
+
+# Fit the model used in geom_smooth (log-log regression)
+model <- lm(log10(RNAnorm_CLIP_CLIP_YB.all) ~ log10(YBdependency), data = plotTABLEclip)
+
+# Extract regression statistics
+slope_lm <- round(coef(model)[2], 3)
+r_squared_lm <- round(summary(model)$r.squared, 3)
+p_value_lm <- summary(model)$coefficients[2, 4]  # Extract p-value for slope
+p_value_fmt_lm <- formatC(p_value_lm, format = "e", digits = 2)  # Scientific notation
+
+
+# Fit GAM model with cubic spline
+gam_model <- gam(RNAnorm_CLIP_CLIP_YB.all ~ s(YBdependency, bs = "cs"), data = plotTABLEclip)
+
+# Extract R², edf (effective degrees of freedom), and p-value
+r_squared_gam <- round(summary(gam_model)$r.sq, 3)
+edf_gam <- round(summary(gam_model)$s.table[1, "edf"], 2)  # Effective degrees of freedom
+p_value_gam <- summary(gam_model)$s.table[1, "p-value"]  # P-value for smooth term
+p_value_fmt_gam <- formatC(p_value_gam, format = "e", digits = 2)  # Scientific notation
+
+
+
+# Create customized annotation text
+regression_label <- paste0("LM\nSlope = ", slope_lm, "\nR² = ", r_squared_lm, "\nP = ", p_value_fmt_lm,"\n\n",
+                           "GAM\nR² = ", r_squared_gam, "\nEDF = ", edf_gam, "\nP = ", p_value_fmt_gam, "\n\n",
+                           "Kendall's τ = ", cor_value_kendall, "\nP = ", p_value_kendall)
+
+# Plot
+x = plotTABLEclip %>%
+  ggplot(aes(x=YBdependency, y=RNAnorm_CLIP_CLIP_YB.all)) +
+  geom_vline(xintercept=1, linetype="dashed", color="darkgrey")+
+  geom_point_rast(size=0.5, alpha=0.3) +
+  geom_smooth( method="lm",se = TRUE) +
+  geom_smooth( method="gam",se = TRUE) +
+  annotate("text", x =  0.1, 
+           y = max(plotTABLEclip$RNAnorm_CLIP_CLIP_YB.all), 
+           label = regression_label, hjust = 0, size = 4, vjust=1) +
+  # geom_vline(xintercept = bin_breaks, linetype="dotted", color="red") +  # Bin separators
+  scale_x_log10(breaks = scales::log_breaks()) +
+  scale_y_log10(breaks = scales::log_breaks()) + 
+  annotation_logticks(sides = "bl", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  labs(x="YB dependency", y="RNAnorm YB-CLIP") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+  
+    aspect.ratio = 1,
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "none",
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black")
+  )
+print(x)
+ggsave2("100nt-tiles_YBdependency_vs_CLIP.scatter.pdf", x, width = 5, height = 5)
+```
+
+### YB-dependency vs CLIP in binned violins
+```{r 100nt tiles - YBdependency  - plot YB-dependency vs CLIP - binned-violins, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+# Set seed for reproducible jittering
+set.seed(123)
+
+p = plotTABLEclip %>%
+  mutate(
+    HIGHLIGHT = case_when(
+      FBgn == "FBgn0086359" ~ "OK",
+      FBgn == "FBgn0262656" ~ "OK",
+      FBgn == "FBgn0260748" ~ "OK",
+      TRUE ~ "NO"
+    ),
+    label = case_when(
+      HIGHLIGHT == "OK" ~ FBgn,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(HIGHLIGHT = factor(HIGHLIGHT, levels = c("NO", "OK"))) %>%
+  ggplot(aes(x = 1, y = YBdependency)) +
+  geom_quasirandom_rast(aes(color = HIGHLIGHT), 
+                   size = 0.2, 
+                   width = 0.4, 
+                   groupOnX = FALSE) +
+  # Modified repel parameters to place labels to the right
+  geom_text_repel(aes(label = label),
+                  size = 3,
+                  force = 2,
+                  direction = "y",
+                  hjust = 0,
+                  xlim = c(1.2, NA),  # Force labels to start at x=1.2
+                  segment.size = 0.2,
+                  segment.color = "gray50",
+                  min.segment.length = 0,
+                  box.padding = 0.25,
+                  na.rm = TRUE) +
+  geom_hline(yintercept = bin_breaks, linetype = "dashed", color = "red", size = 1) +
+  annotate("text", x = 1.4, y = bin_breaks, 
+           label = round(bin_breaks, 3), hjust = 1, vjust = 2, color = "red") +
+  scale_color_manual(values = c("NO" = "black", "OK" = "red")) +
+  scale_y_log10(breaks = scales::log_breaks()) + 
+  annotation_logticks(sides = "l", outside = TRUE) +
+  coord_cartesian(clip = "off") +
+  # Extend the plot area to make room for labels
+  # coord_cartesian(clip = "off", xlim = c(0.5, 1.5)) +
+  labs(x = "for-size", y = "YB-dependency") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    # Add more right margin for labels if needed
+    plot.margin = margin(5.5, 40, 5.5, 5.5, "pt")
+  )
+
+p
+ggsave2("100nt-tiles_YBdependency_vs_CLIP.binning_on_violin.pdf", p, width = 2.5, height = 5)
+
+
+
+# Compute maximum y-value per BIN2 + small offset
+max_values <- plotTABLEclip %>%
+  group_by(BIN2) %>%
+  summarise(y_max = max(RNAnorm_CLIP_CLIP_YB.all, na.rm = TRUE) +1)# Increase by 10%
+
+# Define group comparisons
+comparisons <- list(c("1", "2"), c("2", "3"), c("3", "4"))
+
+# Merge y_max values for p-value label positions
+y_positions <- log10(max_values$y_max)[-1]
+
+p2 = plotTABLEclip %>%
+  ggplot(aes(x = BIN2, y = RNAnorm_CLIP_CLIP_YB.all)) +
+  geom_quasirandom_rast(size = 0.1, alpha = 1, linewidth = 0.3, draw_quantiles = c(0.5)) +
+  # Add count labels
+  geom_text(data = count_data, aes(x = BIN2, y = 0.001, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+  scale_y_log10(breaks = scales::log_breaks(), labels = scales::label_number()) + 
+  annotation_logticks(sides = "l", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  labs(y = "RNAnorm YB-CLIP", x= "YB-dependency bins") +
+  theme_cowplot(14) +
+  theme(
+    # aspect.ratio = 1,
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(5.5, 40, 5.5, 5.5, "pt")
+  )
+
+p2
+
+ggsave2("100nt-tiles_YBdependency_vs_CLIP.binned_violin.pdf", p2, width = 3, height = 5)
+
+
+y=ggarrange(p,p2,common.legend = TRUE)
+print(y)
+
+```
+
+## plot YB-dependency vs nucleotide content
+
+### scatter-plot YB-dependency vs nucleotide content
+```{r 100nt tiles - YBdependency  - plot YB-dependency vs nuc - scatter, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+
+# Copy table to allow modifying the data
+plotTABLEnuc = plotTABLEorig %>% 
+  select(FBgn, YBdependency, starts_with("NUC_"), BIN2) 
+
+# Get bin breakpoints
+bin_breaks <- plotTABLEnuc %>%
+  group_by(BIN2) %>%
+  summarise(min_YBdep = min(YBdependency, na.rm = TRUE)) %>%
+  pull(min_YBdep)
+
+# Remove first bin (we don’t need a line at the lowest boundary)
+bin_breaks <- sort(bin_breaks[-1])
+
+# Reshape the data into long format
+plotTABLEnuc_long <- plotTABLEnuc %>%
+  pivot_longer(-c(FBgn, YBdependency, BIN2), names_to = "Nucleotide", values_to = "value") %>%
+  mutate(Nucleotide = gsub("fullLENGTH_NUC_", "", Nucleotide))  # Clean column names
+
+# Compute statistics per nucleotide (NO log10 transformation)
+stats_nuc <- plotTABLEnuc_long %>%
+  group_by(Nucleotide) %>%
+  summarise(
+    cor_kendall = cor(YBdependency, value, method = "kendall"),
+    p_kendall = cor.test(YBdependency, value, method = "kendall")$p.value,
+    
+    # Linear model (NO log transformation)
+    lm_model = list(lm(value ~ log10(YBdependency))),
+    slope_lm = coef(lm(value ~ log10(YBdependency)))[2],
+    r_squared_lm = summary(lm(value ~ log10(YBdependency)))$r.squared,
+    p_lm = summary(lm(value ~ log10(YBdependency)))$coefficients[2, 4],
+    
+    # GAM Model (NO log transformation)
+    gam_model = list(gam(value ~ s(YBdependency, bs = "cs"))),
+    r_squared_gam = summary(gam(value ~ s(YBdependency, bs = "cs")))$r.sq,
+    edf_gam = summary(gam(value ~ s(YBdependency, bs = "cs")))$s.table[1, "edf"],
+    p_gam = summary(gam(value ~ s(YBdependency, bs = "cs")))$s.table[1, "p-value"]
+  ) %>%
+  mutate(
+    p_kendall = formatC(p_kendall, format = "e", digits = 2),
+    p_lm = formatC(p_lm, format = "e", digits = 2),
+    p_gam = formatC(p_gam, format = "e", digits = 2),
+    slope_lm = round(slope_lm, 3),
+    r_squared_lm = round(r_squared_lm, 3),
+    r_squared_gam = round(r_squared_gam, 3),
+    edf_gam = round(edf_gam, 2),
+    cor_kendall = round(cor_kendall, 3)
+  )
+
+# Merge statistics with long-form data for annotation
+plotTABLEnuc_long <- plotTABLEnuc_long %>%
+  left_join(stats_nuc, by = "Nucleotide")
+
+# Create a function to generate annotation labels
+generate_labels <- function(df) {
+  paste0(
+    "LM\nSlope = ", df$slope_lm, "\nR² = ", df$r_squared_lm, "\nP = ", df$p_lm, "\n\n",
+    "GAM\nR² = ", df$r_squared_gam, "\nEDF = ", df$edf_gam, "\nP = ", df$p_gam, "\n\n",
+    "Kendall's τ = ", df$cor_kendall, "\nP = ", df$p_kendall
+  )
+}
+
+# Plot (NO log scale on y-axis)
+x = plotTABLEnuc_long %>%
+  ggplot(aes(x=YBdependency, y=value)) +
+  geom_vline(xintercept=1, linetype="dashed", color="darkgrey")+
+  geom_point_rast(size=0.5, alpha=0.3) +
+  geom_smooth(se = TRUE, formula = y ~ s(x, bs = "cs")) +
+  geom_smooth(se = TRUE, method = "lm") +
+  facet_wrap(~Nucleotide) +
+  geom_text(data = stats_nuc, aes(x = min(plotTABLEnuc$YBdependency), 
+                                  y = max(plotTABLEnuc_long$value, na.rm = TRUE),
+                                  label = generate_labels(stats_nuc)), 
+            hjust = 0, size = 3, vjust = 1) + 
+  # geom_vline(xintercept = bin_breaks, linetype="dotted", color="red") +  # Bin separators
+  scale_x_log10(breaks = scales::log_breaks()) + 
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5)) +
+  annotation_logticks(sides = "b", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  labs(x="YB dependency", y="[%] Nucleotide") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    aspect.ratio = 1,
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+
+# Save 
+print(x)
+ggsave2("100nt-tiles_YBdependency_vs_NUC.scatter.pdf", x, width = 10, height = 10)
+
+
+```
+
+
+### binned-violins YB-dependency vs nucleotide content
+
+
+
+```{r 100nt tiles - YBdependency  - plot YB-dependency vs NUC, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+
+plotTABLEnuc2 = plotTABLEnuc %>%
+  pivot_longer(-c(FBgn, YBdependency, BIN2), names_to = "name", values_to = "value")%>%
+  separate(name, c("TYPE", "name"), sep = "_")%>%
+  group_by(name, BIN2) 
+
+count_data <- plotTABLEnuc2 %>%
+  summarise(n = n())
+
+# Compute maximum y-value per BIN2 + small offset
+max_values <- plotTABLEnuc2 %>%
+  summarise(y_max = max(value, na.rm = TRUE) + 2)  # Increase by 10%
+
+# Define group comparisons
+comparisons <- list(c("1", "2"), c("2", "3"), c("3", "4"))
+
+# Merge y_max values for p-value label positions
+y_positions <- max_values$y_max[-c(1, 5,9,13)]   # Adjust y-positions for p-values
+
+p2 = plotTABLEnuc2 %>%
+  ggplot(aes(x = BIN2, y = value)) +
+  geom_quasirandom_rast(size = 0.1, alpha = 1, linewidth = 0.3, draw_quantiles = c(0.5)) +
+  facet_wrap(~name, nrow=1,) +
+  # Add count labels
+  geom_text(data = count_data, aes(x = BIN2, y = 8, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+
+  labs(y = "[%] Nucleotide", x= "YB-dependency bins") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+p2
+
+ggsave2("100nt-tiles_YBdependency_vs_NUC.binned_violin.pdf", p2, width = 5, height = 7.5)
+
+#plot U-part only
+plotTABLEnuc3 = plotTABLEnuc2 %>%
+    filter(name == "T") 
+
+
+max_values <- plotTABLEnuc3 %>%
+  group_by(BIN2) %>%
+  summarise(group_max = max(value, na.rm = TRUE)) %>%
+  mutate(
+    y_max = pmax(
+      group_max,
+      lead(group_max, default = -Inf),  # compare with next group
+      lag(group_max, default = -Inf)    # compare with previous group
+    ) +2  # Add 2% offset
+  )
+
+# Define group comparisons
+comparisons <- list(c("1", "2"), c("2", "3"), c("3", "4"))
+
+# Merge y_max values for p-value label positions
+y_positions <- max_values$y_max[-c(1)]   # Adjust y-positions for p-values
+
+p2 = plotTABLEnuc3 %>%
+  ggplot(aes(x = BIN2, y = value)) +
+  # geom_quasirandom_rast(size = 0.1, alpha = 1, linewidth = 0.3, draw_quantiles = c(0.5)) +
+  geom_violin_rast(size = 0.1, alpha = 1, linewidth = 0.3) +
+    # Add count labels
+  geom_text(data = count_data %>% filter(name=="T"), aes(x = BIN2, y = 8, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+
+  labs(y = "[%] Nucleotide", x= "YB-dependency bins") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+p2
+
+ggsave2("100nt-tiles_YBdependency_vs_U.binned_violin.pdf", p2, width = 2, height = 5)
+
+p2 = plotTABLEnuc3 %>%
+  ggplot(aes(x = BIN2, y = value)) +
+  geom_quasirandom_rast(size = 0.01, alpha = 1, linewidth = 0.3) +
+    # Add count labels
+  geom_text(data = count_data %>% filter(name=="T"), aes(x = BIN2, y = 8, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.75, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+
+  labs(y = "[%] Nucleotide", x= "YB-dependency bins") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+p2
+
+ggsave2("100nt-tiles_YBdependency_vs_U.binned_quasirandom.pdf", p2, width = 2.3, height = 5)
+
+```
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ###########################   100nt tiles - biogenesisEFF - TTseq  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+## load and prepare data
+```{r 100nt tiles - biogEFF - load data and prepare RAW table, message=FALSE,warning=FALSE}
+ # load data
+RAW = read_tsv("YBdep_tiles.100_0_100.txt", col_names = TRUE)%>%
+  #remove lost YB library
+  select(-contains("243686"))%>%
+  separate(CHR,c("ID","TYPE"), sep="_",remove=FALSE)%>%
+  {}
+```
+
+## process and filter data
+
+```{r 100nt tiles - biogEFF-TTnorm - process and pre-filter data, message=FALSE,warning=FALSE, fig.width = 6 ,fig.height = 6}
+# filter data
+TABLEfilt= RAW %>%
+  # filter(TYPE == "UTR" | TYPE == "CLUSTER" )%>%
+  filter(TYPE == "UTR"  )%>%
+  select(-contains("ARMI"))%>%
+  #filters implemented for the study
+  filter(UNIQ > 50, RNAseq_RPKM>5 ) %>%
+  {}
+
+nLINES=nrow(TABLEfilt)
+
+
+#calculate RNAseq/TTseq corrected smallRNA and CLIP counts
+TABLEfilt <- TABLEfilt %>%
+  mutate(
+    across(
+      starts_with(c("sRNAdata_")),
+      ~.x / TTseq_RPKM ,
+      .names = "TTnorm_{.col}"
+    ),
+    across(
+      starts_with(c("sRNAdata_")),
+      ~.x / RNAseq_RPKM,
+      .names = "RNAnorm_{.col}"
+    ),
+    across(
+      starts_with(c("CLIP_")),
+      ~.x / RNAseq_RPKM,
+      .names = "RNAnorm_{.col}"
+    )
+  )
+
+
+#calculate YB-dependency
+TABLEfilt <- TABLEfilt %>%
+  mutate(
+    YBdependency = `sRNAdata_average-WT`/`sRNAdata_average-YB`,
+    YB_foldChange = `sRNAdata_average-YB` / `sRNAdata_average-WT`
+    )%>%
+  filter(!is.na(YBdependency))
+
+```
+
+
+## add bins to the table
+```{r 100nt tiles - biogEFF-TTnorm - add bins to the table, message=FALSE,warning=FALSE}
+plotTABLEorig = TABLEfilt %>% 
+  select(-contains("sRNAdata_average-ARMI"))%>%
+  rename(TTnorm_sRNAdata_average_WT = `TTnorm_sRNAdata_average-WT`)%>%
+  rename(RNAnorm_sRNAdata_average_WT = `RNAnorm_sRNAdata_average-WT`)%>%
+  filter(RNAnorm_CLIP_CLIP_YB.all > 0.0005, if_all(starts_with("TTnorm_sRNAdata_average"), ~ . > 0.01) )%>%
+  filter(!is.na(TTnorm_sRNAdata_average_WT))%>%
+  mutate(
+    BIN2 =  as.factor(cut_interval(log10(TTnorm_sRNAdata_average_WT), n=4, labels = FALSE))
+  )%>%
+  #rename column `TTnorm_sRNAdata_average-WT` to TTnorm_sRNAdata_average_WT
+  {}
+
+# Get bin breakpoints
+bin_breaks <- plotTABLEorig %>%
+  group_by(BIN2) %>%
+  summarise(min_YBdep = min(TTnorm_sRNAdata_average_WT, na.rm = TRUE)) %>%
+  pull(min_YBdep)
+
+# Remove first bin (we don’t need a line at the lowest boundary)
+bin_breaks <- sort(bin_breaks[-1])
+
+#determine number per bin
+count_data <- plotTABLEorig %>%
+  group_by(BIN2) %>%
+  summarise(n = n())
+
+
+```
+
+## correlation between 100nt tiles and YB-CLIP
+
+### scatter-plot biogEFF vs CLIP
+```{r 100nt tiles - biogEFF-TTnorm  - plot YB-dependency vs CLIP - scatter, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+#copy table to allow modifying the data
+plotTABLEclip = plotTABLEorig
+
+# Compute Kendall correlation 
+cor_test <- cor.test(plotTABLEclip$TTnorm_sRNAdata_average_WT, plotTABLEclip$RNAnorm_CLIP_CLIP_YB.all, method = "kendall")
+
+#create statistics
+# Extract correlation and p-value
+cor_value_kendall <- round(cor_test$estimate, 3)
+p_value_kendall <- formatC(cor_test$p.value, format = "e", digits = 2)  # Scientific notation
+
+
+# Fit the model used in geom_smooth (log-log regression)
+model <- lm(log10(RNAnorm_CLIP_CLIP_YB.all) ~ log10(TTnorm_sRNAdata_average_WT), data = plotTABLEclip)
+
+# Extract regression statistics
+slope_lm <- round(coef(model)[2], 3)
+r_squared_lm <- round(summary(model)$r.squared, 3)
+p_value_lm <- summary(model)$coefficients[2, 4]  # Extract p-value for slope
+p_value_fmt_lm <- formatC(p_value_lm, format = "e", digits = 2)  # Scientific notation
+
+
+# Fit GAM model with cubic spline
+gam_model <- gam(RNAnorm_CLIP_CLIP_YB.all ~ s(TTnorm_sRNAdata_average_WT, bs = "cs"), data = plotTABLEclip)
+
+# Extract R², edf (effective degrees of freedom), and p-value
+r_squared_gam <- round(summary(gam_model)$r.sq, 3)
+edf_gam <- round(summary(gam_model)$s.table[1, "edf"], 2)  # Effective degrees of freedom
+p_value_gam <- summary(gam_model)$s.table[1, "p-value"]  # P-value for smooth term
+p_value_fmt_gam <- formatC(p_value_gam, format = "e", digits = 2)  # Scientific notation
+
+
+
+# Create customized annotation text
+regression_label <- paste0("LM\nSlope = ", slope_lm, "\nR² = ", r_squared_lm, "\nP = ", p_value_fmt_lm,"\n\n",
+                           "GAM\nR² = ", r_squared_gam, "\nEDF = ", edf_gam, "\nP = ", p_value_fmt_gam, "\n\n",
+                           "Kendall's τ = ", cor_value_kendall, "\nP = ", p_value_kendall)
+
+# Plot
+x = plotTABLEclip %>%
+  ggplot(aes(x=TTnorm_sRNAdata_average_WT, y=RNAnorm_CLIP_CLIP_YB.all)) +
+  geom_vline(xintercept=1, linetype="dashed", color="darkgrey")+
+  geom_point_rast(size=0.5, alpha=0.3) +
+  geom_smooth( method="lm",se = TRUE) +
+  geom_smooth( method="gam",se = TRUE) +
+  annotate("text", x =  0.1, 
+           y = max(plotTABLEclip$RNAnorm_CLIP_CLIP_YB.all), 
+           label = regression_label, hjust = 0, size = 4, vjust=1) +
+  # geom_vline(xintercept = bin_breaks, linetype="dotted", color="red") +  # Bin separators
+  scale_x_log10(breaks = scales::log_breaks()) +
+  scale_y_log10(breaks = scales::log_breaks()) + 
+  annotation_logticks(sides = "bl", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  labs(x="Biogenesis Efficiency", y="RNAnorm YB-CLIP") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+  
+    aspect.ratio = 1,
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "none",
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black")
+  )
+print(x)
+ggsave2("100nt-tiles_BiogEFF_vs_CLIP.scatter.pdf", x, width = 5, height = 5)
+```
+
+### YB-dependency vs CLIP in binned violins
+```{r 100nt tiles - BiogEFF-TTnorm  - plot YB-dependency vs CLIP - binned-violins, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+#copy table to allow modifying the data
+plotTABLEclip = plotTABLEorig
+
+
+# Set seed for reproducible jittering
+set.seed(123)
+
+p = plotTABLEclip %>%
+  mutate(
+    HIGHLIGHT = case_when(
+      FBgn == "FBgn0086359" ~ "OK",
+      FBgn == "FBgn0262656" ~ "OK",
+      FBgn == "FBgn0260748" ~ "OK",
+      TRUE ~ "NO"
+    ),
+    label = case_when(
+      HIGHLIGHT == "OK" ~ FBgn,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(HIGHLIGHT = factor(HIGHLIGHT, levels = c("NO", "OK"))) %>%
+  ggplot(aes(x = 1, y = TTnorm_sRNAdata_average_WT)) +
+  geom_quasirandom_rast(aes(color = HIGHLIGHT), 
+                   size = 0.2, 
+                   width = 0.4, 
+                   groupOnX = FALSE) +
+  # Modified repel parameters to place labels to the right
+  geom_text_repel(aes(label = label),
+                  size = 3,
+                  force = 2,
+                  direction = "y",
+                  hjust = 0,
+                  xlim = c(1.2, NA),  # Force labels to start at x=1.2
+                  segment.size = 0.2,
+                  segment.color = "gray50",
+                  min.segment.length = 0,
+                  box.padding = 0.25,
+                  na.rm = TRUE) +
+  geom_hline(yintercept = bin_breaks, linetype = "dashed", color = "red", size = 1) +
+  annotate("text", x = 1.4, y = bin_breaks, 
+           label = round(bin_breaks, 3), hjust = 1, vjust = 2, color = "red") +
+  scale_color_manual(values = c("NO" = "black", "OK" = "red")) +
+  scale_y_log10(breaks = scales::log_breaks()) + 
+  annotation_logticks(sides = "l", outside = TRUE) +
+  coord_cartesian(clip = "off") +
+  # Extend the plot area to make room for labels
+  # coord_cartesian(clip = "off", xlim = c(0.5, 1.5)) +
+  labs(x = "for-size", y = "Biogenesis Efficiench") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    # Add more right margin for labels if needed
+    plot.margin = margin(5.5, 40, 5.5, 5.5, "pt")
+  )
+
+p
+ggsave2("100nt-tiles_BiogEFF_vs_CLIP.binning_on_violinxy.pdf", p, width = 2, height = 5)
+
+
+
+# Compute maximum y-value per BIN2 + small offset
+max_values <- plotTABLEclip %>%
+  group_by(BIN2) %>%
+  summarise(y_max = max(RNAnorm_CLIP_CLIP_YB.all, na.rm = TRUE) +1)# Increase by 10%
+
+# Define group comparisons
+comparisons <- list(c("1", "2"), c("2", "3"), c("3", "4"))
+
+# Merge y_max values for p-value label positions
+y_positions <- log10(max_values$y_max)[-1]
+
+p2 = plotTABLEclip %>%
+  ggplot(aes(x = BIN2, y = RNAnorm_CLIP_CLIP_YB.all)) +
+  geom_quasirandom_rast(size = 0.1, alpha = 1, linewidth = 0.3, draw_quantiles = c(0.5)) +
+  # Add count labels
+  geom_text(data = count_data, aes(x = BIN2, y = 0.001, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+  scale_y_log10(breaks = scales::log_breaks(), labels = scales::label_number()) + 
+  annotation_logticks(sides = "l", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  labs(y = "RNAnorm YB-CLIP", x= "Biogenesis Efficiency bins") +
+  theme_cowplot(14) +
+  theme(
+    # aspect.ratio = 1,
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(5.5, 40, 5.5, 5.5, "pt")
+  )
+
+p2
+
+ggsave2("100nt-tiles_BiogEFF_vs_CLIP.binned_violin.pdf", p2, width = 3, height = 5)
+
+
+y=ggarrange(p,p2,common.legend = TRUE)
+print(y)
+
+```
+
+## plot BiogEFF vs nucleotide content
+
+### scatter-plot BiogEFF vs nucleotide content
+```{r 100nt tiles - BiogEFF-TTnorm  - plot BiogEFF vs nuc - scatter, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+
+# Copy table to allow modifying the data
+plotTABLEnuc = plotTABLEorig %>% 
+  select(FBgn, TTnorm_sRNAdata_average_WT, starts_with("NUC_"), BIN2) 
+
+# Get bin breakpoints
+bin_breaks <- plotTABLEnuc %>%
+  group_by(BIN2) %>%
+  summarise(min_YBdep = min(TTnorm_sRNAdata_average_WT, na.rm = TRUE)) %>%
+  pull(min_YBdep)
+
+# Remove first bin (we don’t need a line at the lowest boundary)
+bin_breaks <- sort(bin_breaks[-1])
+
+# Reshape the data into long format
+plotTABLEnuc_long <- plotTABLEnuc %>%
+  pivot_longer(-c(FBgn, TTnorm_sRNAdata_average_WT, BIN2), names_to = "Nucleotide", values_to = "value") %>%
+  mutate(Nucleotide = gsub("fullLENGTH_NUC_", "", Nucleotide))  # Clean column names
+
+# Compute statistics per nucleotide (NO log10 transformation)
+stats_nuc <- plotTABLEnuc_long %>%
+  group_by(Nucleotide) %>%
+  summarise(
+    cor_kendall = cor(TTnorm_sRNAdata_average_WT, value, method = "kendall"),
+    p_kendall = cor.test(TTnorm_sRNAdata_average_WT, value, method = "kendall")$p.value,
+    
+    # Linear model (NO log transformation)
+    lm_model = list(lm(value ~ log10(TTnorm_sRNAdata_average_WT))),
+    slope_lm = coef(lm(value ~ log10(TTnorm_sRNAdata_average_WT)))[2],
+    r_squared_lm = summary(lm(value ~ log10(TTnorm_sRNAdata_average_WT)))$r.squared,
+    p_lm = summary(lm(value ~ log10(TTnorm_sRNAdata_average_WT)))$coefficients[2, 4],
+    
+    # GAM Model (NO log transformation)
+    gam_model = list(gam(value ~ s(TTnorm_sRNAdata_average_WT, bs = "cs"))),
+    r_squared_gam = summary(gam(value ~ s(TTnorm_sRNAdata_average_WT, bs = "cs")))$r.sq,
+    edf_gam = summary(gam(value ~ s(TTnorm_sRNAdata_average_WT, bs = "cs")))$s.table[1, "edf"],
+    p_gam = summary(gam(value ~ s(TTnorm_sRNAdata_average_WT, bs = "cs")))$s.table[1, "p-value"]
+  ) %>%
+  mutate(
+    p_kendall = formatC(p_kendall, format = "e", digits = 2),
+    p_lm = formatC(p_lm, format = "e", digits = 2),
+    p_gam = formatC(p_gam, format = "e", digits = 2),
+    slope_lm = round(slope_lm, 3),
+    r_squared_lm = round(r_squared_lm, 3),
+    r_squared_gam = round(r_squared_gam, 3),
+    edf_gam = round(edf_gam, 2),
+    cor_kendall = round(cor_kendall, 3)
+  )
+
+# Merge statistics with long-form data for annotation
+plotTABLEnuc_long <- plotTABLEnuc_long %>%
+  left_join(stats_nuc, by = "Nucleotide")
+
+# Create a function to generate annotation labels
+generate_labels <- function(df) {
+  paste0(
+    "LM\nSlope = ", df$slope_lm, "\nR² = ", df$r_squared_lm, "\nP = ", df$p_lm, "\n\n",
+    "GAM\nR² = ", df$r_squared_gam, "\nEDF = ", df$edf_gam, "\nP = ", df$p_gam, "\n\n",
+    "Kendall's τ = ", df$cor_kendall, "\nP = ", df$p_kendall
+  )
+}
+
+# Plot (NO log scale on y-axis)
+x = plotTABLEnuc_long %>%
+  ggplot(aes(x=TTnorm_sRNAdata_average_WT, y=value)) +
+  geom_vline(xintercept=1, linetype="dashed", color="darkgrey")+
+  geom_point_rast(size=0.5, alpha=0.3) +
+  geom_smooth(se = TRUE, formula = y ~ s(x, bs = "cs")) +
+  geom_smooth(se = TRUE, method = "lm") +
+  facet_wrap(~Nucleotide) +
+  geom_text(data = stats_nuc, aes(x = min(plotTABLEnuc$TTnorm_sRNAdata_average_WT), 
+                                  y = max(plotTABLEnuc_long$value, na.rm = TRUE),
+                                  label = generate_labels(stats_nuc)), 
+            hjust = 0, size = 3, vjust = 1) + 
+  # geom_vline(xintercept = bin_breaks, linetype="dotted", color="red") +  # Bin separators
+  scale_x_log10(breaks = scales::log_breaks()) + 
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5)) +
+  annotation_logticks(sides = "b", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  labs(x="Biogenesis Efficiency", y="[%] Nucleotide") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    aspect.ratio = 1,
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+
+# Save 
+print(x)
+ggsave2("100nt-tiles_BiogEFF_vs_NUC.scatter.pdf", x, width = 10, height = 10)
+
+
+```
+
+
+### binned-violins BiogEFF vs nucleotide content
+
+
+```{r 100nt tiles - BiogEFF-TTnorm  - plot BiogEFF vs NUC, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+
+plotTABLEnuc2 = plotTABLEnuc %>%
+  pivot_longer(-c(FBgn, TTnorm_sRNAdata_average_WT, BIN2), names_to = "name", values_to = "value")%>%
+  separate(name, c("TYPE", "name"), sep = "_")%>%
+  group_by(name, BIN2) 
+
+count_data <- plotTABLEnuc2 %>%
+  summarise(n = n())
+
+# Compute maximum y-value per BIN2 + small offset
+max_values <- plotTABLEnuc2 %>%
+  summarise(y_max = max(value, na.rm = TRUE) + 2)  # Increase by 10%
+
+# Define group comparisons
+comparisons <- list(c("1", "2"), c("2", "3"), c("3", "4"))
+
+# Merge y_max values for p-value label positions
+y_positions <- max_values$y_max[-c(1, 5,9,13)]   # Adjust y-positions for p-values
+
+p2 = plotTABLEnuc2 %>%
+  ggplot(aes(x = BIN2, y = value)) +
+  geom_quasirandom_rast(size = 0.1, alpha = 1, linewidth = 0.3, draw_quantiles = c(0.5)) +
+  facet_wrap(~name, nrow=1,) +
+  # Add count labels
+  geom_text(data = count_data, aes(x = BIN2, y = 8, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+
+  labs(y = "[%] Nucleotide", x= "YB-dependency bins") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+p2
+
+ggsave2("100nt-tiles_BiogEFF_vs_NUC.binned_violin.pdf", p2, width = 5, height = 7.5)
+
+#plot U-part only
+plotTABLEnuc3 = plotTABLEnuc2 %>%
+    filter(name == "T") 
+
+
+max_values <- plotTABLEnuc3 %>%
+  group_by(BIN2) %>%
+  summarise(group_max = max(value, na.rm = TRUE)) %>%
+  mutate(
+    y_max = pmax(
+      group_max,
+      lead(group_max, default = -Inf),  # compare with next group
+      lag(group_max, default = -Inf)    # compare with previous group
+    ) +2  # Add 2% offset
+  )
+
+# Define group comparisons
+comparisons <- list(c("1", "2"), c("2", "3"), c("3", "4"))
+
+# Merge y_max values for p-value label positions
+y_positions <- max_values$y_max[-c(1)]   # Adjust y-positions for p-values
+
+p2 = plotTABLEnuc3 %>%
+  ggplot(aes(x = BIN2, y = value)) +
+  # geom_quasirandom_rast(size = 0.1, alpha = 1, linewidth = 0.3, draw_quantiles = c(0.5)) +
+  geom_violin_rast(size = 0.1, alpha = 1, linewidth = 0.3) +
+    # Add count labels
+  geom_text(data = count_data %>% filter(name=="T"), aes(x = BIN2, y = 8, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+
+  labs(y = "[%] Nucleotide", x= "Biogenesis Efficiency bins") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+p2
+
+ggsave2("100nt-tiles_BiogEFF_vs_U.binned_violin.pdf", p2, width = 2, height = 5)
+
+p2 = plotTABLEnuc3 %>%
+  ggplot(aes(x = BIN2, y = value)) +
+  geom_quasirandom_rast(size = 0.01, alpha = 1, linewidth = 0.3) +
+    # Add count labels
+  geom_text(data = count_data %>% filter(name=="T"), aes(x = BIN2, y = 8, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.75, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+
+  labs(y = "[%] Nucleotide", x= "Biogenesis Efficiency bins") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+p2
+
+ggsave2("100nt-tiles_BiogEFF_vs_U.binned_quasirandom.pdf", p2, width = 2.3, height = 5)
+
+```
+ ## BiogenesisEfficiency vs YB-dependency
+```{r 100nt tiles - BiogEFF-TTnorm  - plot BiogEFF vs YBdep, message=TRUE, warning=FALSE, fig.width = 8 ,fig.height = 5}
+p = plotTABLEorig %>% 
+  separate(ID,c("CLUSTER","POS"), sep="-",remove=FALSE, convert = TRUE)%>%
+  filter(!str_detect(CHR,"GL"))%>%
+  mutate(
+    CLUSTER = case_when(
+      TYPE == "UTR" ~ "UTR",
+      TRUE ~ CLUSTER
+    ))%>%
+  ggplot(aes(x=TTnorm_sRNAdata_average_WT, y=`RNAnorm_sRNAdata_average_WT`)) +
+  geom_point_rast(size=0.5, alpha=0.3) +
+  geom_smooth( method="lm",se = TRUE) +
+  # geom_smooth( method="gam",se = TRUE) +
+  geom_abline(slope=1, intercept=0, linetype="dashed", color="darkgrey")+
+  scale_x_log10(breaks = scales::log_breaks()) +
+  scale_y_log10(breaks = scales::log_breaks()) +
+  annotation_logticks(sides = "bl", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  facet_wrap(~TYPE) +
+  labs(x="Biogenesis Efficiency - TTseq", y="Biogenesis Efficiency - RNAseq") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    # aspect.ratio = 1,
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+print(p)
+
+ggsave2("100nt-tiles_BiogEFF_vs_YBdep.scatter.pdf", p, width = 5, height = 5)
+
+
+plotTABLEorig %>% 
+  ggplot(aes(x=RNAseq_RPKM, y=TTseq_RPKM)) +
+  geom_point_rast(size=0.5, alpha=0.3) +
+  geom_smooth( method="lm",se = TRUE) +
+  # geom_smooth( method="gam",se = TRUE) +
+  geom_abline(slope=1, intercept=0, linetype="dashed", color="darkgrey")+
+  scale_x_log10(breaks = scales::log_breaks()) +
+  scale_y_log10(breaks = scales::log_breaks()) +
+  annotation_logticks(sides = "bl", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  facet_wrap(~TYPE) +
+  labs(x="RNAseq RPKM", y="TTseq RPKM") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    aspect.ratio = 1,
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+```
+ 
+   ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ###########################   100nt tiles - biogenesisEFF - RNAseq  ######################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+## load and prepare data
+```{r 100nt tiles - biogEFF-RNAseq - load data and prepare RAW table, message=FALSE,warning=FALSE}
+ # load data
+RAW = read_tsv("YBdep_tiles.100_0_100.txt", col_names = TRUE)%>%
+  #remove lost YB library
+  select(-contains("243686"))%>%
+  separate(CHR,c("ID","TYPE"), sep="_",remove=FALSE)%>%
+  {}
+```
+
+## process and filter data
+
+```{r 100nt tiles - biogEFF-RNAseq - process and pre-filter data, message=FALSE,warning=FALSE, fig.width = 6 ,fig.height = 6}
+# filter data
+TABLEfilt= RAW %>%
+  filter(TYPE == "UTR" | TYPE=="CLUSTER" | TYPE=="CDS" )%>%
+  filter(!str_detect(CHR,"GL")) %>%
+  select(-contains("ARMI"))%>%
+  #filters implemented for the study
+  filter(UNIQ > 50, RNAseq_RPKM>5 ) %>%
+  {}
+
+nLINES=nrow(TABLEfilt)
+
+
+#calculate RNAseq/TTseq corrected smallRNA and CLIP counts
+TABLEfilt <- TABLEfilt %>%
+  mutate(
+    across(
+      starts_with(c("sRNAdata_")),
+      ~.x / TTseq_RPKM ,
+      .names = "TTnorm_{.col}"
+    ),
+    across(
+      starts_with(c("sRNAdata_")),
+      ~.x / RNAseq_RPKM,
+      .names = "RNAnorm_{.col}"
+    ),
+    across(
+      starts_with(c("CLIP_")),
+      ~.x / RNAseq_RPKM,
+      .names = "RNAnorm_{.col}"
+    )
+  )
+
+
+#calculate YB-dependency
+TABLEfilt <- TABLEfilt %>%
+  mutate(
+    YBdependency = `sRNAdata_average-WT`/`sRNAdata_average-YB`,
+    YB_foldChange = `sRNAdata_average-YB` / `sRNAdata_average-WT`
+    )%>%
+  filter(!is.na(YBdependency),!is.na(`RNAnorm_sRNAdata_average-WT`),!is.infinite(`RNAnorm_sRNAdata_average-WT`),`RNAnorm_sRNAdata_average-WT`>0 )%>%
+  rename(TTnorm_sRNAdata_average_WT = `TTnorm_sRNAdata_average-WT`)%>%
+  rename(RNAnorm_sRNAdata_average_WT = `RNAnorm_sRNAdata_average-WT`)%>%
+  {}
+
+```
+
+## add bins to the table
+```{r 100nt tiles - biogEFF-RNAseq - add bins to the table, message=FALSE,warning=FALSE}
+plotTABLEorig = TABLEfilt %>% 
+  filter(TYPE=="UTR")%>%
+  select(-contains("sRNAdata_average-ARMI"))%>%
+  filter(RNAnorm_CLIP_CLIP_YB.all > 0.0005, if_all(starts_with("RNAnorm_sRNAdata_average"), ~ . > 0.01) )%>%
+  filter(!is.na(RNAnorm_sRNAdata_average_WT))%>%
+  mutate(
+    BIN2 =  as.factor(cut_interval(log10(RNAnorm_sRNAdata_average_WT), n=4, labels = FALSE))
+  )%>%
+  #rename column `TTnorm_sRNAdata_average-WT` to TTnorm_sRNAdata_average_WT
+  {}
+
+# Get bin breakpoints
+bin_breaks <- plotTABLEorig %>%
+  group_by(BIN2) %>%
+  summarise(min_YBdep = min(RNAnorm_sRNAdata_average_WT, na.rm = TRUE)) %>%
+  pull(min_YBdep)
+
+# Remove first bin (we don’t need a line at the lowest boundary)
+bin_breaks <- sort(bin_breaks[-1])
+
+#determine number per bin
+count_data <- plotTABLEorig %>%
+  group_by(BIN2) %>%
+  summarise(n = n())
+
+
+```
+
+
+## correlation between 100nt tiles and YB-CLIP
+
+### scatter-plot biogEFF vs CLIP
+```{r 100nt tiles - biogEFF-RNA  - plot YB-dependency vs CLIP - scatter, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+#copy table to allow modifying the data
+plotTABLEclip = plotTABLEorig
+
+# Compute Kendall correlation
+cor_test <- cor.test(plotTABLEclip$RNAnorm_sRNAdata_average_WT, plotTABLEclip$RNAnorm_CLIP_CLIP_YB.all, method = "kendall")
+
+#create statistics
+# Extract correlation and p-value
+cor_value_kendall <- round(cor_test$estimate, 3)
+p_value_kendall <- formatC(cor_test$p.value, format = "e", digits = 2)  # Scientific notation
+
+
+# Fit the model used in geom_smooth (log-log regression)
+model <- lm(log10(RNAnorm_CLIP_CLIP_YB.all) ~ log10(RNAnorm_sRNAdata_average_WT), data = plotTABLEclip)
+
+# Extract regression statistics
+slope_lm <- round(coef(model)[2], 3)
+r_squared_lm <- round(summary(model)$r.squared, 3)
+p_value_lm <- summary(model)$coefficients[2, 4]  # Extract p-value for slope
+p_value_fmt_lm <- formatC(p_value_lm, format = "e", digits = 2)  # Scientific notation
+
+
+# Fit GAM model with cubic spline
+gam_model <- gam(RNAnorm_CLIP_CLIP_YB.all ~ s(RNAnorm_sRNAdata_average_WT, bs = "cs"), data = plotTABLEclip)
+
+# Extract R², edf (effective degrees of freedom), and p-value
+r_squared_gam <- round(summary(gam_model)$r.sq, 3)
+edf_gam <- round(summary(gam_model)$s.table[1, "edf"], 2)  # Effective degrees of freedom
+p_value_gam <- summary(gam_model)$s.table[1, "p-value"]  # P-value for smooth term
+p_value_fmt_gam <- formatC(p_value_gam, format = "e", digits = 2)  # Scientific notation
+
+
+
+# Create customized annotation text
+regression_label <- paste0("LM\nSlope = ", slope_lm, "\nR² = ", r_squared_lm, "\nP = ", p_value_fmt_lm,"\n\n",
+                           "GAM\nR² = ", r_squared_gam, "\nEDF = ", edf_gam, "\nP = ", p_value_fmt_gam, "\n\n",
+                           "Kendall's τ = ", cor_value_kendall, "\nP = ", p_value_kendall)
+
+# Plot
+x = plotTABLEclip %>%
+  ggplot(aes(x=RNAnorm_sRNAdata_average_WT, y=RNAnorm_CLIP_CLIP_YB.all)) +
+  geom_vline(xintercept=1, linetype="dashed", color="darkgrey")+
+  geom_point_rast(size=0.3, alpha=0.15, color="#343991") +
+  geom_smooth( method="lm",se = TRUE, color="#343991") +
+  geom_smooth( method="gam",se = TRUE, color="#343991") +
+  annotate("text", x =  0.1, 
+           y = max(plotTABLEclip$RNAnorm_CLIP_CLIP_YB.all), 
+           label = regression_label, hjust = 0, size = 4, vjust=1) +
+  # geom_vline(xintercept = bin_breaks, linetype="dotted", color="red") +  # Bin separators
+  scale_x_log10(breaks = scales::log_breaks()) +
+  scale_y_log10(breaks = scales::log_breaks()) + 
+  annotation_logticks(sides = "bl", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  labs(x="Biogenesis Efficiency", y="RNAnorm YB-CLIP") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+  
+    aspect.ratio = 1,
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "none",
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black")
+  )
+print(x)
+ggsave2("100nt-tiles_BiogEFF_vs_CLIP.scatter.RNAnorm.pdf", x, width = 5, height = 5)
+```
+
+### YB-dependency vs CLIP in binned violins
+```{r 100nt tiles - biogEFF-RNA  - plot YB-dependency vs CLIP - binned-violins, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+#copy table to allow modifying the data
+plotTABLEclip = plotTABLEorig
+
+
+# Set seed for reproducible jittering
+set.seed(123)
+
+p = plotTABLEclip %>%
+  ggplot(aes(x = 1, y = RNAnorm_sRNAdata_average_WT)) +
+  geom_quasirandom_rast(, 
+                   size = 0.2, 
+                   width = 0.4, 
+                   groupOnX = FALSE, color="#343991") +
+  # Modified repel parameters to place labels to the right
+  geom_hline(yintercept = bin_breaks, linetype = "dashed", color = "red", size = 1) +
+  annotate("text", x = 1.4, y = bin_breaks, 
+           label = round(bin_breaks, 3), hjust = 1, vjust = 2, color = "red") +
+  scale_y_log10(breaks = scales::log_breaks()) + 
+  annotation_logticks(sides = "l", outside = TRUE) +
+  coord_cartesian(clip = "off") +
+  # Extend the plot area to make room for labels
+  # coord_cartesian(clip = "off", xlim = c(0.5, 1.5)) +
+  labs(x = "for-size", y = "Biogenesis Efficiench") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    # Add more right margin for labels if needed
+    plot.margin = margin(5.5, 40, 5.5, 5.5, "pt")
+  )
+
+p
+ggsave2("100nt-tiles_BiogEFF_vs_CLIP.binning_on_violinxy.pdf", p, width = 2.5, height = 3)
+
+
+
+# Compute maximum y-value per BIN2 + small offset
+max_values <- plotTABLEclip %>%
+  group_by(BIN2) %>%
+  summarise(y_max = max(RNAnorm_CLIP_CLIP_YB.all, na.rm = TRUE) +1)# Increase by 10%
+
+# Define group comparisons
+comparisons <- list(c("1", "2"), c("2", "3"), c("3", "4"))
+
+# Merge y_max values for p-value label positions
+y_positions <- log10(max_values$y_max)[-1]
+
+p2 = plotTABLEclip %>%
+  ggplot(aes(x = BIN2, y = RNAnorm_CLIP_CLIP_YB.all)) +
+  geom_quasirandom_rast(size = 0.1, alpha = 1, linewidth = 0.3, draw_quantiles = c(0.5),color="#343991") +
+  # Add count labels
+  geom_text(data = count_data, aes(x = BIN2, y = 0.001, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+  scale_y_log10(breaks = scales::log_breaks(), labels = scales::label_number()) + 
+  annotation_logticks(sides = "l", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  labs(y = "RNAnorm YB-CLIP", x= "Biogenesis Efficiency bins") +
+  theme_cowplot(14) +
+  theme(
+    # aspect.ratio = 1,
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(5.5, 40, 5.5, 5.5, "pt")
+  )
+
+p2
+
+ggsave2("100nt-tiles_BiogEFF_vs_CLIP.binned_violin.RNAnorm.pdf", p2, width = 3, height = 3)
+
+
+y=ggarrange(p,p2,common.legend = TRUE)
+print(y)
+
+```
+
+## plot BiogEFF vs nucleotide content
+
+### scatter-plot BiogEFF vs nucleotide content
+```{r 100nt tiles - BiogEFF-RNAseq - plot BiogEFF vs nuc - scatter, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+
+# Copy table to allow modifying the data
+plotTABLEnuc = plotTABLEorig %>% filter(TYPE == "UTR" ) %>%
+  select(FBgn, RNAnorm_sRNAdata_average_WT, starts_with("NUC_"), BIN2) 
+
+# Get bin breakpoints
+bin_breaks <- plotTABLEnuc %>%
+  group_by(BIN2) %>%
+  summarise(min_YBdep = min(RNAnorm_sRNAdata_average_WT, na.rm = TRUE)) %>%
+  pull(min_YBdep)
+
+# Remove first bin (we don’t need a line at the lowest boundary)
+bin_breaks <- sort(bin_breaks[-1])
+
+# Reshape the data into long format
+plotTABLEnuc_long <- plotTABLEnuc %>%
+  pivot_longer(-c(FBgn, RNAnorm_sRNAdata_average_WT, BIN2), names_to = "Nucleotide", values_to = "value") %>%
+  mutate(Nucleotide = gsub("fullLENGTH_NUC_", "", Nucleotide))  # Clean column names
+
+# Compute statistics per nucleotide (NO log10 transformation)
+stats_nuc <- plotTABLEnuc_long %>%
+  group_by(Nucleotide) %>%
+  summarise(
+    cor_kendall = cor(RNAnorm_sRNAdata_average_WT, value, method = "kendall"),
+    p_kendall = cor.test(RNAnorm_sRNAdata_average_WT, value, method = "kendall")$p.value,
+    
+    # Linear model (NO log transformation)
+    lm_model = list(lm(value ~ log10(RNAnorm_sRNAdata_average_WT))),
+    slope_lm = coef(lm(value ~ log10(RNAnorm_sRNAdata_average_WT)))[2],
+    r_squared_lm = summary(lm(value ~ log10(RNAnorm_sRNAdata_average_WT)))$r.squared,
+    p_lm = summary(lm(value ~ log10(RNAnorm_sRNAdata_average_WT)))$coefficients[2, 4],
+    
+    # GAM Model (NO log transformation)
+    gam_model = list(gam(value ~ s(RNAnorm_sRNAdata_average_WT, bs = "cs"))),
+    r_squared_gam = summary(gam(value ~ s(RNAnorm_sRNAdata_average_WT, bs = "cs")))$r.sq,
+    edf_gam = summary(gam(value ~ s(RNAnorm_sRNAdata_average_WT, bs = "cs")))$s.table[1, "edf"],
+    p_gam = summary(gam(value ~ s(RNAnorm_sRNAdata_average_WT, bs = "cs")))$s.table[1, "p-value"]
+  ) %>%
+  mutate(
+    p_kendall = formatC(p_kendall, format = "e", digits = 2),
+    p_lm = formatC(p_lm, format = "e", digits = 2),
+    p_gam = formatC(p_gam, format = "e", digits = 2),
+    slope_lm = round(slope_lm, 3),
+    r_squared_lm = round(r_squared_lm, 3),
+    r_squared_gam = round(r_squared_gam, 3),
+    edf_gam = round(edf_gam, 2),
+    cor_kendall = round(cor_kendall, 3)
+  )
+
+# Merge statistics with long-form data for annotation
+plotTABLEnuc_long <- plotTABLEnuc_long %>%
+  left_join(stats_nuc, by = "Nucleotide")
+
+# Create a function to generate annotation labels
+generate_labels <- function(df) {
+  paste0(
+    "LM\nSlope = ", df$slope_lm, "\nR² = ", df$r_squared_lm, "\nP = ", df$p_lm, "\n\n",
+    "GAM\nR² = ", df$r_squared_gam, "\nEDF = ", df$edf_gam, "\nP = ", df$p_gam, "\n\n",
+    "Kendall's τ = ", df$cor_kendall, "\nP = ", df$p_kendall
+  )
+}
+
+# Plot (NO log scale on y-axis)
+x = plotTABLEnuc_long %>%
+  ggplot(aes(x=RNAnorm_sRNAdata_average_WT, y=value)) +
+  geom_vline(xintercept=1, linetype="dashed", color="darkgrey")+
+  geom_point_rast(size=0.8, alpha=0.3, color="#343991") +
+  geom_smooth(se = TRUE, formula = y ~ s(x, bs = "cs")) +
+  geom_smooth(se = TRUE, method = "lm") +
+  facet_wrap(~Nucleotide) +
+  geom_text(data = stats_nuc, aes(x = min(plotTABLEnuc$RNAnorm_sRNAdata_average_WT), 
+                                  y = max(plotTABLEnuc_long$value, na.rm = TRUE),
+                                  label = generate_labels(stats_nuc)), 
+            hjust = 0, size = 3, vjust = 1) + 
+  # geom_vline(xintercept = bin_breaks, linetype="dotted", color="red") +  # Bin separators
+  scale_x_log10(breaks = scales::log_breaks()) + 
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5)) +
+  annotation_logticks(sides = "b", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  labs(x="Biogenesis Efficiency", y="[%] Nucleotide") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    aspect.ratio = 1,
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+
+# Save 
+print(x)
+ggsave2("100nt-tiles_BiogEFF_vs_NUC.scatter.RNAnorm.pdf", x, width = 10, height = 10)
+
+
+```
+
+
+### binned-violins BiogEFF vs nucleotide content
+
+
+```{r 100nt tiles - BiogEFF  - plot BiogEFF vs NUC, message=TRUE, warning=FALSE, fig.width = 5 ,fig.height = 5}
+
+
+plotTABLEnuc2 = plotTABLEnuc %>%
+  pivot_longer(-c(FBgn, RNAnorm_sRNAdata_average_WT, BIN2), names_to = "name", values_to = "value")%>%
+  separate(name, c("TYPE", "name"), sep = "_")%>%
+  group_by(name, BIN2) 
+
+count_data <- plotTABLEnuc2 %>%
+  summarise(n = n())
+
+# Compute maximum y-value per BIN2 + small offset
+max_values <- plotTABLEnuc2 %>%
+  summarise(y_max = max(value, na.rm = TRUE) + 2)  # Increase by 10%
+
+# Define group comparisons
+comparisons <- list(c("1", "2"), c("2", "3"), c("3", "4"))
+
+# Merge y_max values for p-value label positions
+y_positions <- max_values$y_max[-c(1, 5,9,13)]   # Adjust y-positions for p-values
+
+p2 = plotTABLEnuc2 %>%
+  ggplot(aes(x = BIN2, y = value)) +
+  # geom_quasirandom_rast(size = 0.1, alpha = 1, linewidth = 0.3, draw_quantiles = c(0.5)) +
+  geom_violin_rast(size = 0.1, alpha = 1, linewidth = 0.3, fill="#343991") +
+  # geom_boxplot(fill="black") +
+    facet_wrap(~name, nrow=1,) +
+  # Add count labels
+  geom_text(data = count_data, aes(x = BIN2, y = 8, label = n), 
+            color = "black", size = 3, vjust = 0) +
+  coord_cartesian(ylim=c(0,70)) +
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.8, 
+    fatten = 3, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     # label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+                     label = "p.signif",label.y = 65) +  # Use computed y-positions
+
+  labs(y = "[%] Nucleotide", x= "Biognesis Efficiency bins") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    panel.spacing = unit(1, "lines"), 
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+p2
+
+ggsave2("100nt-tiles_BiogEFF_vs_NUC.binned_violin.RNAnorm.pdf", p2, width = 5, height = 6)
+
+#plot U-part only
+plotTABLEnuc3 = plotTABLEnuc2 %>%
+    filter(name == "T") 
+
+
+max_values <- plotTABLEnuc3 %>%
+  group_by(BIN2) %>%
+  summarise(group_max = max(value, na.rm = TRUE)) %>%
+  mutate(
+    y_max = pmax(
+      group_max,
+      lead(group_max, default = -Inf),  # compare with next group
+      lag(group_max, default = -Inf)    # compare with previous group
+    ) +2  # Add 2% offset
+  )
+
+# Define group comparisons
+comparisons <- list(c("1", "2"), c("2", "3"), c("3", "4"))
+
+# Merge y_max values for p-value label positions
+y_positions <- max_values$y_max[-c(1)]   # Adjust y-positions for p-values
+
+p2 = plotTABLEnuc3 %>%
+  ggplot(aes(x = BIN2, y = value)) +
+  # geom_quasirandom_rast(size = 0.1, alpha = 1, linewidth = 0.3, draw_quantiles = c(0.5)) +
+  geom_violin_rast(size = 0.1, alpha = 1, linewidth = 0.3) +
+    # Add count labels
+  geom_text(data = count_data %>% filter(name=="T"), aes(x = BIN2, y = 8, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+
+  labs(y = "[%] Nucleotide", x= "Biogenesis Efficiency bins") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+p2
+
+ggsave2("100nt-tiles_BiogEFF_vs_U.binned_violin.RNAnorm.pdf", p2, width = 2, height = 5)
+
+p2 = plotTABLEnuc3 %>%
+  ggplot(aes(x = BIN2, y = value)) +
+  geom_quasirandom_rast(size = 0.01, alpha = 1, linewidth = 0.3) +
+    # Add count labels
+  geom_text(data = count_data %>% filter(name=="T"), aes(x = BIN2, y = 8, label = n), 
+            color = "black", size = 3, vjust = 0) +
+
+  # Add median crossbars
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.75, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  # Add p-values dynamically above max y-values
+  stat_compare_means(comparisons = comparisons, 
+                     method = "wilcox.test", 
+                     label = "p.signif",label.y = y_positions) +  # Use computed y-positions
+
+  labs(y = "[%] Nucleotide", x= "Biogenesis Efficiency bins") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  )
+p2
+
+ggsave2("100nt-tiles_BiogEFF_vs_U.binned_quasirandom.RNAnorm.pdf", p2, width = 2.3, height = 5)
+
+```
+ 
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ###########################   Uramp sensor  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# Uramp sensor
+
+## load data
+```{r Uramp-sensor - load data and prepare RAW table, message=FALSE,warning=FALSE}
+# load data
+RAWhist = read_tsv("Uramp-sensor_newNORM.bg", col_names = TRUE)%>%
+  {}
+
+RAWsensor= RAWhist %>% 
+  filter(! str_detect(SENSOR,"tj-locus"))
+
+RAWstats = read_tsv("ALL.stats.Uramp.newNORM.txt", col_names = TRUE)%>%
+  {}
+
+RAW = left_join(RAWsensor, RAWstats, by = c("libNAME"))%>%
+  {}
+```
+
+## plot sRNA histograms
+
+```{r Uramp-sensor - plot sRNA histograms, message=FALSE,warning=FALSE, fig.width = 8 ,fig.height = 5}
+plotTABLE = RAW %>%
+  filter(!grepl("YB",libNAME))%>%
+  group_by(SENSOR,POSITION)%>%
+  summarise(
+    COUNT_QPCRnorm = mean(COUNT_QPCRnorm)
+  )
+
+plotTABLE %>%
+  ggplot(aes(x=POSITION, y=COUNT_QPCRnorm)) +
+  geom_line()+
+  facet_wrap(~SENSOR, nrow=2)
+  
+
+```
+
+```{r Uramp-sensor - plot sRNA histograms including error, message=FALSE,warning=FALSE, fig.width = 8 ,fig.height = 5}
+for (KD in c("Luc", "YB")){
+  plotTABLE = RAW %>%
+    filter(grepl(KD,libNAME))%>%
+    group_by(SENSOR, POSITION) %>%
+    summarise(
+      upper = max(COUNT_QPCRnorm) ,          # Upper bound
+      lower = min(COUNT_QPCRnorm )  ,         # Lower bound
+      COUNT_QPCRnormAVG = mean(COUNT_QPCRnorm),
+  
+    )%>%
+    #add smoothing
+    # mutate(
+    #   COUNT_QPCRnormAVG = smooth.spline(POSITION, COUNT_QPCRnormAVG, spar=0.5)$y,
+    # )%>%
+    {}
+  
+  UTRstart = RAW %>%
+    filter(!grepl("YB",libNAME))%>%
+    summarise(
+      UTRstart = mean(UTRstart)
+    )%>%
+    pull(UTRstart)%>%
+    {}
+  plotTABLE %>% filter(COUNT_QPCRnormAVG>100 )
+  
+  UTRend = RAW %>%
+    filter(!grepl("YB",libNAME))%>%
+    summarise(
+      UTRend = max(UTRend)
+    )%>%
+    pull(UTRend)%>%
+    {}
+  
+  
+  p = plotTABLE %>%
+    ggplot(aes(x = POSITION, y = COUNT_QPCRnormAVG)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 1, fill = "grey") +  # Add the grey ribbon
+    geom_line(size=0.2) +
+    facet_wrap(~SENSOR, nrow = 2)+
+    scale_y_continuous(limits=c(0,12000))+
+    geom_vline(aes(xintercept = UTRstart), linetype = "dashed", color = "darkgrey", size=0.5) +
+    geom_vline(aes(xintercept = UTRend), linetype = "dashed", color = "darkgrey", size=0.5)+
+    geom_hline(yintercept=5000, linetype = "dotted", color = "darkgrey", size=0.5)+
+    labs(x = "Position on sensor",
+         y = "QPCR normalized sRNA count")+
+    theme_cowplot(14) +
+    theme(
+      axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+      axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_blank(),
+      legend.position = "none",
+      # Black border on facet strips
+      strip.background = element_rect(fill = "white", color = "black", size = 1), 
+      strip.text = element_text(face = "bold", color = "black")
+    ) +
+  {}
+  print(p)
+  ggsave2(paste("Uramp-sensor_histogram.includingSpread.",KD,".pdf",sep=""), p, width = 8, height = 5)
+}
+
+```
+
+```{r Uramp-sensor - plot sRNA histograms including error - zoom, message=FALSE,warning=FALSE, fig.width = 4.5 ,fig.height = 5}
+plotTABLE = RAW %>%
+  filter(!grepl("U35_siYB_Rep1",libNAME))%>%
+  mutate(
+    CLASS= case_when(
+      grepl("YB",libNAME) ~ "YB",
+      TRUE ~ "WT"
+    )
+  )%>%
+  filter(str_detect(SENSOR, "U20")| str_detect(SENSOR,"U35"))%>%
+  group_by(SENSOR, POSITION,CLASS) %>%
+  summarise(
+    upper = max(COUNT_QPCRnorm) ,          # Upper bound
+    lower = min(COUNT_QPCRnorm )  ,         # Lower bound
+    COUNT_QPCRnormAVG = mean(COUNT_QPCRnorm),
+
+  )%>%
+  #add smoothing
+  # mutate(
+  #   COUNT_QPCRnormAVG = smooth.spline(POSITION, COUNT_QPCRnormAVG, spar=0.5)$y,
+  # )%>%
+  {}
+
+UTRstart = RAW %>%
+  filter(!grepl("YB",libNAME))%>%
+  summarise(
+    UTRstart = mean(UTRstart)
+  )%>%
+  pull(UTRstart)%>%
+  {}
+plotTABLE %>% filter(COUNT_QPCRnormAVG>100 )
+
+UTRend = RAW %>%
+  filter(!grepl("YB",libNAME))%>%
+  summarise(
+    UTRend = max(UTRend)
+  )%>%
+  pull(UTRend)%>%
+  {}
+
+
+p = plotTABLE %>%
+  filter(!grepl("YB",CLASS))%>%
+  ggplot(aes(x = POSITION, y = COUNT_QPCRnormAVG)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 1, fill = "grey") +  # Add the grey ribbon
+  geom_line(size=0.2) +
+  facet_wrap(~SENSOR, nrow = 2)+
+  geom_vline(aes(xintercept = UTRstart), linetype = "dashed", color = "red", size=0.5) +
+  geom_vline(aes(xintercept = UTRend), linetype = "dashed", color = "blue", size=0.5)+
+  labs(x = "Position on sensor",
+       y = "QPCR normalized sRNA count")+
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  ) +
+{}
+print(p)
+ggsave2("Uramp-sensor_histogram.includingSpread.zoom.pdf", p, width = 4, height = 5)
+
+
+p = plotTABLE %>%
+  filter(grepl("YB",CLASS))%>%
+  ggplot(aes(x = POSITION, y = COUNT_QPCRnormAVG)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 1, fill = "grey") +  # Add the grey ribbon
+  geom_line(size=0.2) +
+  facet_wrap(~SENSOR, nrow = 2)+
+  geom_vline(aes(xintercept = UTRstart), linetype = "dashed", color = "red", size=0.5) +
+  geom_vline(aes(xintercept = UTRend), linetype = "dashed", color = "blue", size=0.5)+
+  labs(x = "Position on sensor",
+       y = "QPCR normalized sRNA count")+
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  ) +
+{}
+print(p)
+ggsave2("Uramp-sensor_histogram.includingSpread.zoom.YB.pdf", p, width = 4, height = 5)
+
+
+p = plotTABLE %>% 
+  filter(POSITION>1414)%>%
+  select(-upper, -lower)%>%
+  pivot_wider(names_from = CLASS, values_from = COUNT_QPCRnormAVG) %>%
+  mutate(
+    ratio = YB / WT
+  )%>%
+  ggplot(aes(x=POSITION, y=ratio, color=SENSOR))+
+  geom_line()+
+  # facet_wrap(~SENSOR, nrow=2)+
+  labs(x = "Position on sensor",
+       y = "YB / WT ratio")+
+  theme_cowplot(14) +
+   geom_vline(aes(xintercept = UTRstart), linetype = "dashed", color = "red", size=0.5) +
+  geom_vline(aes(xintercept = UTRend), linetype = "dashed", color = "blue", size=0.5)+
+ scale_y_log10()+
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = "none",
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  ) +{}
+p
+ggsave("Uramp-sensor_histogram.YB_vs_WT_ratio.pdf", p, width = 6, height = 5)
+
+```
+
+
+
+## plot nucleotide content for the U-ramp
+```{r Uramp-sensor - plot nucleotide content, message=FALSE,warning=FALSE, fig.width = 8 ,fig.height = 5}
+n_sensors= RAW %>%
+  select(SENSOR)%>%
+  unique()%>%
+  nrow()
+n_sensors = n_sensors - 1 
+
+# Create the color palette
+okabe_ito <- as.character(paletteer_d("colorblindr::OkabeIto"))
+sensor_colors <- c(okabe_ito[1:n_sensors], "black")
+
+p= RAW %>%
+  group_by(SENSOR)%>%
+  select(POSITION, contains("NUC_"))%>%
+  # pivot_longer(-c(POSITION,SENSOR), names_to = "NUC", values_to = "VALUE")%>%
+  ggplot(aes(x=POSITION, y=NUC_T, color=SENSOR)) +
+  geom_smooth(method="loess", span=0.01)+
+  geom_hline(yintercept = c(20,25,27.5,30,32.5,35,40,45), 
+             linetype = "dashed", color = "grey", size=0.5) +
+  geom_vline(aes(xintercept = UTRstart), linetype = "dashed", color = "red", size=0.5) +
+  geom_vline(aes(xintercept = UTRend), linetype = "dashed", color = "blue", size=0.5)+
+  scale_y_continuous(breaks = c(10,20,25,27.5,30,32.5,35,40,45)) +
+  scale_color_manual(values = sensor_colors) +
+  labs(x = "Position on sensor",
+       y = "% Uridin")+
+  theme_cowplot(14) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black")
+  ) +
+{}
+
+print(p)
+
+ggsave("Uramp-sensor_histogram.nucleotideContent.pdf", p, width = 8, height = 5)
+
+```
+
+
+```{r plot response curve bi-phasic model - U-ramp, message=FALSE,warning=FALSE, fig.width = 5 ,fig.height = 5}
+PLOTtableFULL = RAW %>%
+  filter(POSITION>=UTRstart, POSITION<=UTRend)%>%
+  separate(SENSOR, c("SENSORx","Ucount"), sep = "-", remov= FALSE)%>%
+  separate(Ucount, c("x","Ucount"), sep = "U",convert = TRUE)%>%
+  mutate(
+    UTRcount = UTRcount / QPCRnorm
+  )%>%  
+  group_by(libNAME,SENSOR)%>%
+  summarise(
+    sRNAmedian = median (COUNT_QPCRnorm),
+    Ucount = mean(Ucount),
+    UTRcount = mean(UTRcount),
+    UTRstart = mean(UTRstart),
+    UTRend = mean(UTRend)
+  )%>%
+  ungroup()%>%
+    {}  
+
+
+PLOTtable = PLOTtableFULL %>%
+  filter(!grepl("YB",libNAME))%>%
+  {}
+
+## Fit 4‑parameter logistic: lower=A, upper=B, midpoint=xmid, scale=scal
+fit <- nls(
+  UTRcount ~ SSfpl(Ucount, A, B, xmid, scal),
+  data = PLOTtable
+)
+
+## Prediction grid
+pred_df <- data.frame(
+  Ucount = seq(min(PLOTtable$Ucount), max(PLOTtable$Ucount), length.out = 200)
+)
+
+## Extract parameter estimates and covariance
+theta_hat <- coef(fit)
+Sigma    <- vcov(fit)
+
+## Monte Carlo to get prediction uncertainty on the mean curve
+set.seed(1)
+n_sim <- 1000
+
+theta_sim <- MASS::mvrnorm(n = n_sim, mu = theta_hat, Sigma = Sigma)
+
+## Function for 4‑parameter logistic
+f4pl <- function(x, A, B, xmid, scal) {
+  A + (B - A) / (1 + exp((xmid - x) / scal))
+}
+
+pred_mat <- apply(theta_sim, 1, function(th) {
+  f4pl(pred_df$Ucount, A = th["A"], B = th["B"],
+       xmid = th["xmid"], scal = th["scal"])
+})
+
+## Summarise mean and 95% CI across simulations
+pred_df$UTR_hat  <- rowMeans(pred_mat)
+pred_df$lower_ci <- apply(pred_mat, 1, quantile, probs = 0.025)
+pred_df$upper_ci <- apply(pred_mat, 1, quantile, probs = 0.975)
+
+## Ensure no negative CI for counts
+pred_df$lower_ci[pred_df$lower_ci < 0] <- 0
+
+## Plot points + logistic curve + CI ribbon
+p <- ggplot(PLOTtable, aes(x = Ucount, y = UTRcount)) +
+  geom_point(size = 1, alpha = 1, color="#059e74") +
+  geom_point(data=PLOTtableFULL %>% filter(grepl("YB",libNAME)), color="#cc79a7")+
+  geom_ribbon(
+    data = pred_df,
+    aes(x = Ucount, ymin = lower_ci, ymax = upper_ci),
+    fill = "#059e74", alpha = 0.2, inherit.aes = FALSE
+  ) +
+  geom_line(
+    data = pred_df,
+    aes(x = Ucount, y = UTR_hat),
+    colour = "#059e74", linewidth = 1.2, inherit.aes = FALSE
+  ) +
+  coord_cartesian(ylim = c(0, 125000)) +
+  scale_x_continuous(breaks = c(10,20,25,27.5,30,32.5,35,40,45)) +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    aspect.ratio = 1,
+    strip.background = element_rect(fill = "white", color = "black", size = 1),
+    strip.text = element_text(face = "bold", color = "black")
+  )
+
+print(p)
+ggsave("U-ramp_sensor_response-curve.logistic-curve.pdf", p, width = 5, height = 5)
+```
+
+
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ###########################   tj sensor   ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# tj sensor
+
+## load data
+```{r tj-sensor - load data and prepare RAW table, message=FALSE,warning=FALSE}
+
+# load data
+RAWhist = read_tsv("tj-sensor.bg", col_names = TRUE)%>%
+  {}
+
+RAWstats = read_tsv("tj_sensor.ALL.stats.txt", col_names = TRUE)%>%
+  {}
+
+RAW = left_join(RAWhist, RAWstats, by = c("libNAME"))%>%
+  {}
+
+
+UTRstart = RAW %>%
+  summarise(
+    UTRstart = mean(UTRstart)
+  )%>%
+  pull(UTRstart)%>%
+  {}
+
+UTRend = RAW %>%
+  summarise(
+    UTRend = max(UTRend)
+  )%>%
+  pull(UTRend)%>%
+  {}
+
+
+```
+
+
+## plot sRNA histogram
+```{r tj-sensor - plot sRNA histograms, fig.height=3, fig.width=8, message=FALSE, warning=FALSE}
+NORM="COUNT_QPCRnorm"
+
+PLOTtable <- RAW %>%
+  filter(grepl("tj", libNAME)| grepl("U25",libNAME))%>%
+  mutate(
+    SENSOR = case_when(
+      TRUE ~ SENSOR
+    ),
+    CLASS = case_when(
+      grepl("siLuc", libNAME) ~ "noSensor", 
+      grepl("wtCis" , libNAME) ~ "wtCIS",
+      grepl("SiomiMutated" , libNAME) ~ "SiomiMutated",
+      # grepl("SiomiMutated" , libNAME) ~ libNAME,
+      grepl("shuffle" , libNAME) ~ "shuffle",
+      TRUE ~ SENSOR
+    ),
+    LOCUS = case_when(
+      grepl("PLX", SENSOR) ~ "endogenous-tj",
+      TRUE ~ "sensor-tj"
+    ),
+  )%>%
+  filter(! CLASS == "SiomiMutated")%>%
+  group_by(SENSOR,CLASS, POSITION, LOCUS) %>%
+  mutate(
+    VAL = case_when(
+      LOCUS=="endogenous-tj" ~ COUNT_miRNAnorm,
+      TRUE ~ .data[[NORM]]
+    )
+  )%>%
+  summarise(
+    minVAL    = min(VAL, na.rm = TRUE),
+    maxVAL    = max(VAL, na.rm = TRUE),
+    mean_value = mean(VAL, na.rm = TRUE),
+    sd        = sd(VAL, na.rm = TRUE),
+    se        = sd / sqrt(n()),
+    ci_upper  = mean_value + 1.96 * se,
+    ci_lower  = mean_value - 1.96 * se,
+    .groups   = "drop"
+  )%>%
+  mutate(
+    POSITION=case_when(
+      LOCUS=="endogenous-tj" ~ POSITION -00 ,
+      TRUE ~ POSITION - 1365
+    )
+  )
+
+p= PLOTtable %>%
+    ggplot( aes(x = POSITION, y = mean_value)) +
+    geom_line() +
+  geom_ribbon(aes(ymin = minVAL, ymax = maxVAL), alpha = 0.2, color = NA) +
+    labs(x = "Position on sensor",
+         y = "QPCR normalized sRNA count")+
+  geom_vline(xintercept=50, linetype = "dashed", color = "grey", size=0.5) +
+  # geom_vline(xintercept=UTRend, linetype = "dashed", color = "grey", size=0.5) +
+  geom_vline(xintercept=250, linetype = "dashed", color = "red", size=0.5) +
+  geom_vline(xintercept=350, linetype = "dashed", color = "red", size=0.5) +
+  facet_grid(CLASS~LOCUS, scales="free_y")+
+  scale_x_continuous(limits=c(0, 1543))+
+  # scale_color_manual(values = c("#0072B2", "#E69F00")) +
+  # scale_fill_manual(values = c("#0072B2", "#E69F00")) +
+  scale_y_continuous(expand = expansion(mult = c(0.01, NA)))+
+  theme_cowplot(14) +
+  theme(
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    # legend.position = "none",
+    # Black border on facet strips
+    strip.background = element_rect(fill = "white", color = "black", size = 1), 
+    strip.text = element_text(face = "bold", color = "black"),
+    axis.line.x = element_blank(),
+        # axis.text.x = element_blank(),
+        # axis.ticks.x = element_blank(),
+        # axis.title.x = element_blank(),
+        axis.ticks.length.x = unit(0, "mm"), # Remove tick length
+        plot.margin = margin(5.5, 5.5, 1.5, 5.5, "pt")
+  ) +
+{}
+  
+print(p)
+
+ggsave("tjCIS-sensor.pdf", p, width =10, height = 5)
+
+```
+
+
+
+
+
+
+
