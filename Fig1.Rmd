@@ -1,0 +1,1330 @@
+---
+title: "Fig-1 - A Naïve RNA Sampling Core Enables Adaptive piRNA Specificity Against Transposable Elements - 2026-02"
+output: 
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if (knitr::is_latex_output()) {
+  MODE <- "PDF"
+} else if (knitr::is_html_output()) {
+  MODE <- "HTML"
+} else {
+  MODE <- "OTHER"
+}
+
+print(MODE)
+```
+
+
+
+load all packages required
+```{r load-packages, echo=TRUE, message=TRUE, warning=TRUE}
+library(cowplot)
+library(ggforce)
+library(ggpubr)
+library(ggrepel)
+library(knitr)
+library(paletteer)
+library(ggalt)
+library(plotly)
+library(ggbeeswarm)
+library(scico)
+library(cividis)
+library(ggrastr)
+library(khroma)
+library(ggalluvial)
+library(ggokabeito)
+library(paletteer)
+library(scales)
+library(ppcor)
+library(mgcv)  # For fitting GAM model
+library(tidyverse)
+
+theme_set(theme_cowplot(12))
+
+```
+
+
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ########################### piRNA source-analysis  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+
+## load data and plot overview
+```{r piRNA source-analysis - load-data , echo=TRUE}
+# read in the data
+RAW  =  read_tsv("quantified-sources.txt") %>%
+  filter(ANN != "miRNA")
+
+#print table to give overview
+RAW
+```
+
+
+## stacked bar-chart with cluster break out - WT
+
+```{r piRNA source-analysis - bar-chart with cluster-breakout WT , echo=TRUE, message=FALSE, warning=FALSE, fig.width=3, fig.height=5}
+for(currLIB in c("WT","WT_RNAseq_Aleks","WT_TTseq")){
+  PLOTtable = RAW %>%
+    filter(GENO==currLIB)%>%
+    separate(ANN,c("ANN","TEtype"), sep = ":!:", remove = TRUE)%>%
+    select(,-TEtype)%>%
+    group_by(GENO,TYPE,ANN,CLUSTER) %>%
+    summarise(COUNT = sum(COUNT)) %>%
+    ungroup()%>%
+    group_by(GENO,TYPE) %>%
+    mutate(
+      COUNT = COUNT / sum(COUNT)
+    )
+  
+  PLOTtable$ANN = factor(PLOTtable$ANN, levels = c("INTRON" ,"5UTR","CDS", "3UTR","NONE","TE", "TE_AS"  ))
+  
+  p=ggplot(PLOTtable, aes(axis1=ANN, axis2=CLUSTER, y=COUNT,fill=ANN))+
+      scale_x_discrete(limits = c("ANN", "CLUSTER"), expand = c(.2, .05)) +
+      geom_alluvium(aes(fill=ANN)) +
+      geom_stratum()+
+      # facet_grid(GENO~TYPE ) +
+      # geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+      theme_cowplot(12)+
+      labs(fill=currLIB)+
+      scale_y_continuous(labels = scales::percent_format())+
+      theme(
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        legend.title = element_text(size = 6)
+      )+
+      scale_fill_scico_d(palette = "navia", direction=-1  ) +
+    {}
+  
+  print(p)
+  
+  ggsave(paste("stackedBars_TEs_with-cluster-splitup.",currLIB,".pdf",sep=""), p, width = 3, height = 5, units = "in", dpi = 300)
+  
+  
+  PLOTtable = RAW %>%
+    filter(GENO==currLIB)%>%
+    mutate(
+      COUNT = case_when(
+        ANN == "INTRON" ~ 0,
+        TRUE ~ COUNT
+      )
+    )%>%
+    separate(ANN,c("ANN","TEtype"), sep = ":!:", remove = TRUE)%>%
+    select(,-TEtype)%>%
+    group_by(GENO,TYPE,ANN,CLUSTER) %>%
+    summarise(COUNT = sum(COUNT)) %>%
+    ungroup()%>%
+    group_by(GENO,TYPE) %>%
+    mutate(
+      COUNT = COUNT / sum(COUNT)
+    )
+
+  PLOTtable$ANN = factor(PLOTtable$ANN, levels = c( "INTRON","5UTR","CDS", "3UTR","NONE","TE", "TE_AS"  ))
+
+  p=ggplot(PLOTtable, aes(axis1=ANN, axis2=CLUSTER, y=COUNT,fill=ANN))+
+      scale_x_discrete(limits = c("ANN", "CLUSTER"), expand = c(.2, .05)) +
+      geom_alluvium(aes(fill=ANN)) +
+      geom_stratum()+
+      # facet_grid(GENO~TYPE ) +
+      # geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+      theme_cowplot(12)+
+      labs(fill=currLIB)+
+      scale_y_continuous(labels = scales::percent_format())+
+      theme(
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        legend.title = element_text(size = 6)
+      )+
+      scale_fill_scico_d(palette = "navia", direction=-1  ) +
+    {}
+  
+  print(p)
+  
+    ggsave(paste("stackedBars_TEs_with-cluster-splitup.",currLIB,".noIntron.pdf",sep=""), p, width = 3, height = 5, units = "in", dpi = 300)
+
+}
+```
+
+```{r piRNA source-analysis - stacked-bar chart - piRNA vs RNAseq }
+PLOTtable = RAW %>% 
+  filter(GENO %in% c("WT","WT_RNAseq_Aleks")) %>%
+    mutate(
+      COUNT = case_when(
+        ANN == "INTRON" ~ 0,
+        TRUE ~ COUNT
+      )
+    )%>%
+  separate(ANN, c("ANN","TEtype"), sep = ":!:", remove = TRUE)%>%
+  group_by(GENO, TYPE,ANN) %>%
+  summarise(COUNT = sum(COUNT)) %>%
+  mutate(
+    COUNT = COUNT / sum(COUNT)
+  )
+
+  PLOTtable$ANN = factor(PLOTtable$ANN, levels = c("INTRON" ,"5UTR","CDS", "3UTR","NONE","TE", "TE_AS"  ))
+
+ p = PLOTtable %>%
+  ggplot(aes(x=GENO, y=COUNT, alluvium=ANN, fill=ANN))+
+       scale_x_discrete(expand = c(.2, .05)) +
+  geom_bar(stat = "identity", width = 0.2, color = "white", size = 0.2) +
+  geom_alluvium(width = 0.2, alpha = 0.7, 
+                curve_type = "sigmoid")+   # smoother curves
+   scale_fill_scico_d(palette = "navia", direction = -1) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_cowplot(12) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1)  # if labels are long
+  ) +
+  labs(x = NULL, y = "Proportion", fill = "Annotation")
+
+ print(p)
+  ggsave(paste("stackedBars_TEs_with-RNA-comparison.pdf",sep=""), p, width = 3, height = 5, units = "in", dpi = 300)
+  
+  
+```
+
+
+## fold enrichment of each categorie
+
+```{r piRNA source-analysis - class enrichment , echo=TRUE, message=FALSE, warning=FALSE, fig.width=8, fig.height=5}
+
+RAW %>%
+    separate(ANN,c("ANN","TEtype"), sep = ":!:", remove = TRUE)%>%
+    filter(grepl("WT", GENO), ! ANN == "INTRON")%>%
+    select(,-TEtype)%>%
+    # mutate(
+    #   ANN = case_when(
+    #     CLUSTER == "Y" ~ "CLUSTER",
+    #     TRUE ~ ANN
+    #   )
+    # )%>%
+    group_by(GENO,TYPE,ANN) %>%
+    summarise(COUNT = sum(COUNT)) %>%
+    ungroup()%>%
+    group_by(GENO,TYPE) %>%
+    mutate(
+      COUNT = COUNT / sum(COUNT)
+    )%>%
+  ungroup()%>%
+  select(-TYPE)%>%
+    pivot_wider(names_from = GENO, values_from = COUNT)%>%
+  mutate(
+    RATIO_RNAseq = WT / `WT_RNAseq_Aleks` ,
+    RATIO_TTseq = WT / `WT_TTseq` 
+  )%>%
+  select(ANN, RATIO_RNAseq)%>%
+  pivot_longer(cols = starts_with("RATIO"), names_to = "LIB", values_to = "FOLDenrichment")%>%
+ mutate(
+    ANN = factor(ANN, levels = c("CLUSTER","TE_AS", "NONE", "3UTR", "CDS", "5UTR", "TE", "INTRON"))
+  ) %>%
+   ggplot(aes(x=ANN, y=FOLDenrichment, fill=LIB))+
+      geom_bar(stat="identity", position=position_dodge())+
+      theme_cowplot(12)+
+      labs(y="Fold-enrichment over WT", x="Molecule-Type")+
+      theme(
+        legend.position = c(0.5, 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust=1)
+      )+
+  # facet_row(~LIB)+
+  scale_y_log10()+
+      scale_fill_manual(values=scico(10, palette="navia", categorical=TRUE, direction=1))
+
+ggsave("fold-enrichment.pdf", width = 6, height = 4, units = "in", dpi = 300)
+```
+## stacked bar-chart with cluster break out - YB
+
+```{r piRNA source-analysis - bar-chart with cluster-breakout YB , echo=TRUE, message=FALSE, warning=FALSE, fig.width=3, fig.height=5}
+  PLOTtable = RAW %>%
+    filter(GENO %in% c("WT", "YB"))%>%
+    separate(ANN,c("ANN","TEtype"), sep = ":!:", remove = TRUE)%>%
+    select(,-TEtype)%>%
+    group_by(GENO,TYPE,ANN,CLUSTER) %>%
+    summarise(COUNT = sum(COUNT)) %>%
+    ungroup()%>%
+    group_by(GENO,TYPE) %>%
+    mutate(
+      COUNT = COUNT / sum(COUNT)
+    )
+
+  
+  PLOTtable$ANN = factor(PLOTtable$ANN, levels = c("INTRON" ,"5UTR","CDS", "3UTR","NONE","TE", "TE_AS"  ))
+  
+  p=ggplot(PLOTtable, aes(x=GENO, y=COUNT,fill=ANN))+
+      # scale_x_discrete(limits = c("ANN", "CLUSTER"), expand = c(.2, .05)) +
+      geom_bar(stat="identity") +
+      # geom_stratum()+
+      # facet_grid(GENO~TYPE ) +
+      # geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+      theme_cowplot(12)+
+      labs(fill=currLIB)+
+      scale_y_continuous(labels = scales::percent_format())+
+      theme(
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        legend.title = element_text(size = 6)
+      )+
+      scale_fill_scico_d(palette = "navia", direction=-1  ) +
+    {}
+  
+  print(p)
+  
+  ggsave(paste("stackedBars_WT_vs_YB.pdf",sep=""), p, width = 3, height = 5, units = "in", dpi = 300)
+  
+  
+
+```
+
+
+
+
+
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ########################### biogenesis-efficiency comparison  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+## load data
+```{r biogenesis-efficiency comparison - load data and prepare RAW table}
+ # load data
+RAW = read_tsv("full-length.quantified.ALL.txt", col_names = TRUE)%>%
+  #remove lost YB library
+  select(-contains("243686"))%>%
+  {}
+
+```
+
+## filter data and prepare efficencie-counts
+```{r biogenesis-efficiency comparison - filter data}
+# filter data
+TABLEfilt= RAW %>%
+  filter(TYPE %in% c("CDS","UTR", "CLUSTER")) %>%
+  filter(!str_detect(FBgn, "GL")) %>%
+  select(-contains("ARMI"))%>%
+  mutate(LENGTHds500=LENGTH-500)%>%
+  mutate(NUC_GC = fullLENGTH_NUC_C + fullLENGTH_NUC_G)%>%
+  #filters implemented for the study
+  filter(UNIQ > 50, RNAseq_RPKM>5 ) %>%
+  {}
+
+nLINES=nrow(TABLEfilt)
+
+
+#calculate RNAseq/TTseq corrected smallRNA and CLIP counts
+TABLEfilt <- TABLEfilt %>%
+  mutate(
+    across(
+      starts_with(c("sRNAdata_")),
+      ~.x / TTseq_RPKM,
+      .names = "TTnorm_{.col}"
+    ),
+    across(
+      starts_with(c("sRNAdata_")),
+      ~.x / RNAseq_RPKM,
+      .names = "RNAnorm_{.col}"
+    ),
+  )
+
+
+```
+
+## plot biogenesis-efficiency
+```{r biogenesis-efficiency comparison -  plot-biogenesis-efficiency WT, echo=TRUE, message=FALSE, warning=FALSE, fig.width=4, fig.height=5}
+
+PLOTtable = TABLEfilt %>%
+  select(FBgn, TYPE, `TTnorm_sRNAdata_average-WT`,`RNAnorm_sRNAdata_average-WT`)%>%
+  separate(FBgn, c("CLUSTER","PosInCluster"), sep = "-", remove = FALSE)%>%
+  mutate(
+    CLUSTER = case_when(
+      TYPE == "CLUSTER" ~ CLUSTER,
+      TRUE ~ "other-source-loci"
+    ),
+    dotSIZE = case_when(
+      TYPE == "CLUSTER" ~ 1.5,
+      TRUE ~ 0.01
+    )
+  )
+
+# First, get the unique clusters excluding "other-source-loci"
+
+n_clusters <- length(unique(PLOTtable$CLUSTER[PLOTtable$CLUSTER != "other-source-loci"]))
+
+# Create the color palette
+okabe_ito <- as.character(paletteer_d("colorblindr::OkabeIto"))
+cluster_colors <- c(okabe_ito[1:n_clusters], "black")
+
+PLOTtable$TYPE <- factor(PLOTtable$TYPE,
+                         levels = c("CDS", "UTR", "CLUSTER"))
+
+p= PLOTtable %>%
+  pivot_longer(cols = c(`TTnorm_sRNAdata_average-WT`,`RNAnorm_sRNAdata_average-WT`), names_to = "NORMtype", values_to = "COUNT")%>%
+  ggplot(aes(x=TYPE,y=COUNT,colour = TYPE))+
+  # geom_point()+
+  geom_quasirandom_rast( aes(size=dotSIZE), alpha=1, varwidth = TRUE, groupOnX = TRUE)+
+  scale_y_log10(limits=c(0.001,300))+
+  # scale_color_igv()+
+  scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +  # Add this line
+  scale_size_identity()+
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  stat_summary(
+  fun = median,
+  geom = "text",
+  aes(label = sprintf("%.2f", after_stat(y))),
+  vjust = -0.5,
+  size = 3,
+  color = "red"
+  )+  coord_cartesian(clip = "off")+
+  annotation_logticks(sides = "l", outside=TRUE) +
+  facet_row(~NORMtype)+
+  theme_cowplot(12)+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank()
+  )+
+  {}
+
+print(p)
+
+ggsave("biogenesis-efficiency.pdf", p, width = 3.8, height = 5, units = "in", dpi = 300)
+```
+## biogenesis efficiency in YB-depleted conditions
+```{r biogenesis-efficiency comparison - plot-biogenesis-efficiency siYB, echo=TRUE, message=FALSE, warning=FALSE, fig.width=6, fig.height=5}
+
+PLOTtable = TABLEfilt %>%
+  select(FBgn, TYPE, `TTnorm_sRNAdata_average-YB`,`RNAnorm_sRNAdata_average-YB`)%>%
+  separate(FBgn, c("CLUSTER","PosInCluster"), sep = "-", remove = FALSE)%>%
+  mutate(
+    CLUSTER = case_when(
+      TYPE == "CLUSTER" ~ CLUSTER,
+      TRUE ~ "other-source-loci"
+    ),
+    dotSIZE = case_when(
+      TYPE == "CLUSTER" ~ 1.5,
+      TRUE ~ 0.01
+    )
+  )
+
+# First, get the unique clusters excluding "other-source-loci"
+n_clusters <- length(unique(PLOTtable$CLUSTER[PLOTtable$CLUSTER != "other-source-loci"]))
+
+# Create the color palette
+okabe_ito <- as.character(paletteer_d("colorblindr::OkabeIto"))
+cluster_colors <- c(okabe_ito[1:n_clusters], "black")
+
+PLOTtable$TYPE <- factor(PLOTtable$TYPE,
+                         levels = c("CDS", "UTR", "CLUSTER"))
+
+p= PLOTtable %>%
+  pivot_longer(cols = c(`TTnorm_sRNAdata_average-YB`,`RNAnorm_sRNAdata_average-YB`), names_to = "NORMtype", values_to = "COUNT")%>%
+  ggplot(aes(x=TYPE,y=COUNT,colour = TYPE))+
+  geom_quasirandom( aes(size=dotSIZE), alpha=1, varwidth = TRUE, groupOnX = TRUE)+
+  scale_y_log10(limits=c(0.001,300))+
+  # scale_color_igv()+
+    stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  stat_summary(
+  fun = median,
+  geom = "text",
+  aes(label = sprintf("%.2f", after_stat(y))),
+  vjust = -0.5,
+  size = 3,
+  color = "red"
+  )+
+  scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +  # Add this line
+  scale_size_identity()+
+  facet_row(~NORMtype)+
+  theme_cowplot(12)+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank()
+  )+
+  {}
+
+print(p)
+
+ggsave("biogenesis-efficiency.siYB.pdf", p, width = 3.8, height = 5, units = "in", dpi = 300)
+```
+
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ###########################    biogenesis-factor screening  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+## load data
+```{r biogenesis factor screening - load data and prepare RAW table}
+ # load data
+RAW = read_tsv("full-length.quantified.ALL.txt", col_names = TRUE)%>%
+  #remove lost YB library
+  select(-contains("243686"))%>%
+  {}
+
+```
+
+## plot dot-plot including cluster-splitup
+```{r biogenesis-factor screening - plot data, echo=TRUE, message=FALSE, warning=FALSE, fig.width=5, fig.height=7}
+PLOTtable = RAW %>%
+  filter(TYPE %in% c("CDS","UTR", "CLUSTER")) %>%
+  filter(!str_detect(FBgn, "GL")) %>%
+  #filters implemented for the study
+  filter(UNIQ > 50, RNAseq_RPKM>5,  if_all(starts_with("sRNAdata_siGFP"), ~ . > 1 ) ) %>%
+  select(FBgn, TYPE, contains("sRNAdata_si"))%>%
+  mutate(
+    across(
+      starts_with(c("sRNAdata_")),
+      ~.x / sRNAdata_siGFP_HQsRNA,
+      .names = "foldChange_{.col}"
+    )
+  )%>%  
+  select(-starts_with("sRNAdata_"), - foldChange_sRNAdata_siGFP_HQsRNA)%>%
+  separate(FBgn, c("CLUSTER","PosInCluster"), sep = "-", remove = FALSE)%>%
+  mutate(
+    CLUSTER = case_when(
+      TYPE == "CLUSTER" ~ CLUSTER,
+      TRUE ~ "UTR"
+    ),
+    dotSIZE = case_when(
+      TYPE == "CLUSTER" ~ 1.5,
+      TRUE ~ 0.01
+    )
+  )
+
+cluster_colors = okabe_ito
+p = PLOTtable %>% 
+  pivot_longer(cols = starts_with("foldChange"), names_to = "LIB", values_to = "COUNT")%>%
+  separate(LIB, c("foldChange","sRNAdata","LIB"))%>%
+  mutate(
+    LIB = factor(LIB, levels = c("siSOYB","siVRET","siARMI","siZUC","siYB","siPIWI"))
+  )%>%
+  ggplot(aes(x=LIB,y=COUNT,color = TYPE))+
+geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "CDS"),
+    aes(x = as.numeric(LIB) - 0.1, y = COUNT, color = TYPE),
+    width      = 0.3,   # controls horizontal spread
+    varwidth   = FALSE,  # fixed width
+    groupOnX   = FALSE,
+    size       = 0.01,
+    alpha      = 1
+  ) +
+  # UTR slightly to the right
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "UTR"),
+    aes(x = as.numeric(LIB) + 0.1, y = COUNT, color = TYPE),
+    width      = 0.3,
+    varwidth   = FALSE,
+    groupOnX   = FALSE,
+    size       = 0.01,
+    alpha      = 1
+  ) +
+  # CLUSTER centered on the original LIB positions (narrowed as well)
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "CLUSTER"),
+    aes(x = as.numeric(LIB), y = COUNT, color = TYPE),
+    width      = 0.4,
+    varwidth   = FALSE,  # or TRUE if you like varwidth for clusters
+    groupOnX   = TRUE,
+    size       = 1.3,
+    alpha      = 1
+  ) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red")+
+  labs(x="biogenesis-factor knocked-doww", y="fold-change compared to siGFP")+
+  scale_y_log10()+
+  # scale_color_igv()+
+  scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +  # Add this line
+  scale_size_identity()+
+  coord_flip(clip = "off")+
+  annotation_logticks(sides = "b", outside=TRUE) +
+  theme_cowplot(12)+
+  theme(
+
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    legend.position = "none",
+  )+
+  {}
+
+
+print(p)
+
+ggsave("biogenesis-factor-screening.pdf", p, width = 4.5, height = 7, units = "in", dpi = 300)
+
+```
+
+
+## calculate absolute total-piRNA loss
+```{r biogenesis-factor screening - calculate-absolute-total-piRNA-loss, echo=TRUE, message=FALSE, warning=FALSE, fig.width=5, fig.height=7}
+RAW %>%
+  filter(TYPE %in% c("CDS","UTR", "CLUSTER")) %>%
+  filter(!str_detect(FBgn, "GL")) %>%
+  #filters implemented for the study
+  filter(UNIQ > 50, RNAseq_RPKM>5 ) %>%
+  select(FBgn, TYPE, contains("sRNAdata_si"))%>%
+  pivot_longer(cols = starts_with("sRNAdata"), names_to = "LIB", values_to = "COUNT")%>%
+  group_by(LIB)%>%
+  summarise(
+    COUNT = sum(COUNT)
+  )%>%
+  mutate(
+    foldCHANGE = round(COUNT[LIB == "sRNAdata_siGFP_HQsRNA"] / COUNT ,2)
+  )
+  
+```
+
+## calculate absolute cluster piRNA loss
+```{r biogenesis-factor screening - calculate-absolute-cluster-piRNA-loss, echo=TRUE, message=FALSE, warning=FALSE, fig.width=5, fig.height=7}
+RAW %>%
+  filter(TYPE %in% c("CLUSTER")) %>%
+  filter(!str_detect(FBgn, "GL")) %>%
+  #filters implemented for the study
+  filter(UNIQ > 50, RNAseq_RPKM>5 ) %>%
+  select(FBgn, TYPE, contains("sRNAdata_si"))%>%
+  pivot_longer(cols = starts_with("sRNAdata"), names_to = "LIB", values_to = "COUNT")%>%
+  group_by(LIB)%>%
+  summarise(
+    COUNT = sum(COUNT)
+  )%>%
+  mutate(
+    foldCHANGE = round(COUNT[LIB == "sRNAdata_siGFP_HQsRNA"] / COUNT ,2)
+  )
+
+```
+
+## calculate piRNA efficiency vs YB-dependency
+```{r biogenesis-factor screening - calculate-piRNA-efficiency-vs-YB-dependency, echo=TRUE, message=FALSE, warning=FALSE, fig.width=5, fig.height=7}
+ 
+plotTABLE = RAW %>%
+  filter(TYPE %in% c("CDS","UTR","CLUSTER")) %>%
+  filter(!str_detect(FBgn, "GL")) %>%
+  #filters implemented for the study
+  select(CHR,TYPE,UNIQ,RNAseq_RPKM,TTseq_RPKM,`sRNAdata_average-WT`,`sRNAdata_average-YB`)%>%
+  filter(UNIQ > 50, RNAseq_RPKM>5, if_any(starts_with("sRNAdata_average"), ~ . > 1 ) ) %>%
+  mutate(
+    YBdependency = `sRNAdata_average-WT` / `sRNAdata_average-YB`,
+    piRNAefficiency = `sRNAdata_average-WT` / RNAseq_RPKM
+  )
+
+
+library(dplyr)
+library(ggplot2)
+library(ppcor)
+
+# Subset just CDS and UTR for stats
+stats_data <- plotTABLE %>%
+  filter(TYPE %in% c("CDS", "UTR"))
+
+# Split by TYPE
+stats_list <- stats_data %>%
+  group_split(TYPE)
+
+# Helper function to compute all stats for one TYPE
+compute_stats <- function(df) {
+  # Partial Pearson on log10, controlling for WT sRNA
+  pc <- pcor.test(
+    x = log10(df$YBdependency),
+    y = log10(df$piRNAefficiency),
+    z = log10(df$`sRNAdata_average-WT`),
+    method = "pearson"
+  )
+  r_partial <- round(pc$estimate, 3)
+  p_partial <- formatC(pc$p.value, format = "e", digits = 2)
+  
+  # Optional Spearman
+  pcs <- pcor.test(
+    x = log10(df$YBdependency),
+    y = log10(df$piRNAefficiency),
+    z = log10(df$`sRNAdata_average-WT`),
+    method = "spearman"
+  )
+  rho_partial <- round(pcs$estimate, 3)
+  p_rho_partial <- formatC(pcs$p.value, format = "e", digits = 2)
+  
+  # Kendall (uncorrected)
+  cor_test <- cor.test(df$YBdependency, df$piRNAefficiency, method = "kendall")
+  cor_value_kendall <- round(cor_test$estimate, 3)
+  p_value_kendall <- formatC(cor_test$p.value, format = "e", digits = 2)
+  
+  # Log–log LM
+  model <- lm(log10(piRNAefficiency) ~ log10(YBdependency), data = df)
+  slope_lm <- round(coef(model)[2], 3)
+  r_squared_lm <- round(summary(model)$r.squared, 3)
+  p_value_lm <- summary(model)$coefficients[2, 4]
+  p_value_fmt_lm <- formatC(p_value_lm, format = "e", digits = 2)
+  
+  list(
+    r_partial = r_partial,
+    p_partial = p_partial,
+    rho_partial = rho_partial,
+    p_rho_partial = p_rho_partial,
+    cor_value_kendall = cor_value_kendall,
+    p_value_kendall = p_value_kendall,
+    slope_lm = slope_lm,
+    r_squared_lm = r_squared_lm,
+    p_value_fmt_lm = p_value_fmt_lm
+  )
+}
+
+# Compute for each type
+stats_summary <- lapply(stats_list, function(df) {
+  type_name <- unique(df$TYPE)
+  s <- compute_stats(df)
+  
+  # Construct a label string per TYPE
+  label <- paste0(
+    type_name, ":\n",
+    "Partial r (log), ctl WT sRNA = ", s$r_partial, " (P=", s$p_partial, ")\n",
+    "LM (log–log): slope=", s$slope_lm, ", R²=", s$r_squared_lm, 
+    " (P=", s$p_value_fmt_lm, ")\n",
+    "Kendall's τ=", s$cor_value_kendall, " (P=", s$p_value_kendall, ")"
+  )
+  
+  data.frame(
+    TYPE = type_name,
+    label = label,
+    stringsAsFactors = FALSE
+  )
+}) %>%
+  bind_rows()
+
+stats_summary
+# Example: place labels at two y-positions
+label_df <- stats_summary %>%
+  mutate(
+    x = 0.01,
+    y = c(
+      max(plotTABLE$piRNAefficiency),                      # UTR (say)
+      max(plotTABLE$piRNAefficiency) / 12                 # CDS lower
+    )
+  )
+
+p = plotTABLE %>%
+  ggplot(aes(x=`YBdependency`, y=`piRNAefficiency`, color=TYPE))+
+    geom_point_rast(data=.%>%filter(TYPE %in% c("CDS","UTR")),size=0.3, alpha=0.2)+
+    geom_point_rast(data=.%>%filter(TYPE %in% c("CLUSTER")),size=1, alpha=1)+
+    scale_x_log10()+
+    scale_y_log10()+
+  geom_smooth(data=.%>%filter(TYPE %in% c("CDS","UTR")),aes(color=TYPE), se = TRUE) +
+  # geom_vline(xintercept = bin_breaks, linetype="dotted", color="red") +  # Bin separators
+  scale_x_log10(breaks = scales::log_breaks()) +
+  scale_y_log10(breaks = scales::log_breaks()) +
+    scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +
+  # facet_row(~ TYPE)+
+  annotation_logticks(sides = "bl", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  labs(x="YB dependency", y="biogenesis-efficiency") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+  
+    aspect.ratio = 1,
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "none",
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black")
+  )+
+  geom_text(
+    data = label_df,
+    aes(x = x, y = y, label = label, color = TYPE),
+    hjust = 0, vjust = 1, size = 3, show.legend = FALSE
+  )+
+{}
+
+print(p)
+ggsave("piRNA-efficiency-vs-YB-dependency.pdf", p, width = 5, height = 5, units = "in", dpi = 300)
+  
+
+```
+
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ########################### compare soma with OSC piRNAs  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+
+
+## load data
+```{r compare soma with OSC piRNAs - load data and prepare RAW table}
+ # load data
+RAW = read_tsv("full-length.quantified.ALL.txt", col_names = TRUE)%>%
+  #remove lost YB library
+  select(-contains("243686"))%>%
+  {}
+
+```
+## determine soma genes
+
+```{r compare soma with OSC piRNAs - determine-soma-genes, echo=TRUE, message=FALSE, warning=FALSE, fig.width=10, fig.height=7}
+
+
+TABLEx =  RAW %>%
+  separate(FBgn,c("FBgn","TYPEx"),sep="_",remove=TRUE)%>%
+  separate(FBgn,c("FBgn2","NR"),sep="-",remove=FALSE, convert = TRUE)%>%
+  filter(LENGTH>200, UNIQ>50)%>%
+  # filter(
+  #   if_any(c(AubAGO3,Wsh), ~ . > 0.01),
+  #   if_all(c(AubAGO3,Wsh), ~ . > 0.001),
+  #   LENGTH>200
+  # )%>%
+  mutate(
+    RATIOsoma_vs_gl = `sRNAdata_average-Wsh_nGFP-Piwi-PiwiIP` / ((`sRNAdata_average-MTD_shPiwi_antiPiwi-IP-mouse_Kirsten_corr`))
+  )%>%
+  mutate(
+    TYPE = case_when(
+        str_detect(TYPE,"glUTR") ~ "UTR",
+        TRUE ~ TYPE
+    ),
+    TYPEdetail = 
+      case_when(
+        str_detect(FBgn,"flam") ~ "CLUSTERsoma",
+        str_detect(FBgn,"20A") ~ "CLUSTERsoma",
+        str_detect(FBgn,"77B") ~ "CLUSTERsoma",
+        TRUE ~ TYPE
+      ),
+    ID = 
+      case_when(
+        str_detect(FBgn,"flam") ~ "flam",
+        str_detect(FBgn,"20A") ~ "20A",
+        str_detect(FBgn,"77B") ~ "77B",
+        TYPE == "CLUSTER" ~ "dsCLUSTER",
+        TRUE ~ "GENIC"
+      )
+  )
+
+GLcutoff=4
+SOMAcutoff=0.25
+
+TABLE = TABLEx %>%
+  mutate(
+    TISSUE = case_when(
+      RATIOsoma_vs_gl > GLcutoff ~ "GL",
+      RATIOsoma_vs_gl < SOMAcutoff ~ "SOMA",
+      TRUE ~ "MIXED"
+    ),
+    TYPE = factor(TYPE, levels = c( "CDS", "UTR", "CLUSTER"))
+  )
+
+TEST=TABLE %>%
+  filter(grepl("FBgn0003015", FBgn))%>%
+  select(RATIOsoma_vs_gl)%>%
+  pull()
+TABLE %>%
+  ggplot(aes(x=RATIOsoma_vs_gl, fill=ID))+
+  geom_histogram(bins=100)+
+  geom_vline(xintercept=TEST , color="black", linetype="dashed")+
+  scale_x_log10()+
+  facet_col(~TYPE, scales = "free_y")+
+  theme_cowplot(14)+
+  labs(x="RATIO (Wsh / PiwiIP)", y="Count")+
+  geom_vline(xintercept = GLcutoff, color="red")+
+  geom_vline(xintercept = SOMAcutoff, color="red")+
+  #fill using okabe ito
+  scale_fill_okabe_ito()
+
+# ggsave( filename = "GL-soma-splitting.new.pdf", width = 6, height = 6)
+
+TABLE %>%
+  ungroup()%>%
+group_by(TYPE)%>%
+  filter(TISSUE %in% c("GL"),if_all(starts_with("sRNAdata_"), ~ . > 0.1)) %>%
+  summarise(
+    RATIO = mean(`sRNAdata_extra-tj-g4_control_ox` / `sRNAdata_extra-tj-g4_YB_ox`)
+  )
+
+TABLE %>%
+  ggplot(aes(x=`sRNAdata_extra-tj-g4_control_ox`, y=`sRNAdata_extra-tj-g4_YB_ox`*0.8283, color=TISSUE))+
+  geom_point(alpha=0.3, shape=16 )+
+  scale_x_log10()+
+  scale_y_log10()+
+  theme_cowplot(14)+
+  labs(x="sRNA in soma (control)", y="sRNA in soma (siYB)")+
+  facet_row(~TISSUE)+
+  geom_abline(slope=1, intercept=0, linetype="dashed", color="red")+
+  scale_color_manual(values = c("GL" = "#0274b3", "SOMA" = "#343991" , "MIXED" = "#e6a025" )) +
+  annotation_logticks(sides = "bl", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    aspect.ratio = 1
+  )
+
+```
+
+## compare OSC vs ovary-soma
+```{r compare soma with OSC piRNAs - compare-OSC-vs-ovaries, echo=TRUE, message=FALSE, warning=FALSE, fig.width=6, fig.height=5}
+
+plotTABLE = TABLE %>%
+  filter(TYPE %in% c("CDS","UTR"), TISSUE == "SOMA") %>%
+  filter(!str_detect(FBgn, "GL"), !str_detect(FBgn, "20A")) %>%
+  dplyr::select(CHR, FBgn, TYPE, `sRNAdata_average-WT`, `sRNAdata_average-YB`,`sRNAdata_extra-tj-g4_control_ox`,`sRNAdata_extra-tj-g4_YB_ox`,UNIQ, RNAseq_RPKM) %>%
+  filter(UNIQ > 50, RNAseq_RPKM>5, if_all(starts_with("sRNAdata_"), ~ . > 0.1 ) ) %>%
+  separate(FBgn, c("CLUSTER","PosInCluster"), sep = "-", remove = FALSE)%>%
+  mutate(
+    CLUSTER = case_when(
+      TYPE == "UTR" ~ "UTR",
+      TRUE ~ CLUSTER
+    )
+  )%>%
+  mutate(
+    YBdependencyOSC = `sRNAdata_average-WT` / `sRNAdata_average-YB`,
+    YBdependencyOvary = `sRNAdata_extra-tj-g4_control_ox` / (`sRNAdata_extra-tj-g4_YB_ox`)
+  )
+
+# Work on log10-transformed values once
+df <- plotTABLE %>%
+  mutate(
+    x = log10(YBdependencyOSC),
+    y = log10(YBdependencyOvary)
+  )
+
+# Helper to compute stats on df$x, df$y
+compute_stats_xy <- function(df) {
+  # Spearman on logs
+  rho_spear <- suppressWarnings(
+    cor(df$x, df$y, method = "spearman", use = "pairwise.complete.obs")
+  )
+  rho_spear <- round(rho_spear, 3)
+  p_spear <- suppressWarnings(
+    cor.test(df$x, df$y, method = "spearman")$p.value
+  )
+  p_spear_fmt <- formatC(p_spear, format = "e", digits = 2)
+  
+  # Kendall (uncorrected, on raw scale if you prefer)
+  kend <- suppressWarnings(cor.test(df$x, df$y, method = "kendall"))
+  tau_k <- round(kend$estimate, 3)
+  p_tau_fmt <- formatC(kend$p.value, format = "e", digits = 2)
+  
+  # Log–log LM (matches geom_smooth on logs)
+  lm_fit <- lm(y ~ x, data = df)
+  slope_lm <- round(coef(lm_fit)[2], 3)
+  r_squared_lm <- round(summary(lm_fit)$r.squared, 3)
+  p_value_lm <- summary(lm_fit)$coefficients[2, 4]
+  p_value_fmt_lm <- formatC(p_value_lm, format = "e", digits = 2)
+  
+  list(
+    rho_spear      = rho_spear,
+    p_spear_fmt    = p_spear_fmt,
+    tau_k          = tau_k,
+    p_tau_fmt      = p_tau_fmt,
+    slope_lm       = slope_lm,
+    r_squared_lm   = r_squared_lm,
+    p_value_fmt_lm = p_value_fmt_lm
+  )
+}
+
+s <- compute_stats_xy(df)
+
+# Label in the same style as your CDS/UTR block (excluding partial r)
+regression_label <- paste0(
+  "Spearman ρ (log) = ", s$rho_spear, " (P=", s$p_spear_fmt, ")\n",
+  "LM (log–log): slope=", s$slope_lm, ", R²=", s$r_squared_lm,
+  " (P=", s$p_value_fmt_lm, ")\n",
+  "Kendall's τ=", s$tau_k, " (P=", s$p_tau_fmt, ")"
+)
+
+regression_label
+
+lims=c(0.05,50)
+plotTABLE %>%
+  ggplot(aes(x=`YBdependencyOSC`, y=`YBdependencyOvary`, color=TYPE))+
+    geom_point_rast(size=0.2, alpha=0.4)+
+    scale_x_log10()+
+    scale_y_log10()+
+  geom_smooth( method="lm",se = TRUE) +
+  annotate("text", x =  0.05,
+           y = 50,
+           label = regression_label, hjust = 0, size = 4, vjust=1) +
+  # geom_vline(xintercept = bin_breaks, linetype="dotted", color="red") +  # Bin separators
+  scale_x_log10(limits = lims, breaks = scales::log_breaks()) +
+  scale_y_log10(limits = lims, breaks = scales::log_breaks()) +
+  scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +
+  annotation_logticks(sides = "bl", outside=TRUE) +
+  coord_cartesian(clip = "off") +
+  facet_row(~ TYPE)+
+  labs(x="YB dependency OSC", y="YB dependency Ovary") +
+  theme_cowplot(14) +
+  theme(
+    axis.text.x = element_text(margin = margin(t = 9, unit = "pt")),
+    axis.text.y = element_text(margin = margin(r = 9, unit = "pt")),
+    
+    aspect.ratio = 1,
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "none",
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black")
+  )+
+{}
+
+ggsave("YBdependency_OSC-vs-ovary.pdf", width = 10, height = 5, units = "in", dpi = 300)
+
+```
+
+## plot dot-plot including cluster-splitup
+```{r compare soma with OSC piRNAs - fold change upon YB knockdown, echo=TRUE, message=FALSE, warning=FALSE, fig.width=4, fig.height=4}
+PLOTtable = TABLE %>%
+  filter(TYPE %in% c("CDS","UTR", "CLUSTER")) %>%
+  filter(!str_detect(FBgn, "GL"), TISSUE=="SOMA") %>%
+  #filters implemented for the study
+  filter(UNIQ > 50, RNAseq_RPKM>5,  if_all(starts_with("sRNAdata_siGFP"), ~ . > 1 ) ) %>%
+  select(FBgn, TYPE, TISSUE, `sRNAdata_average-WT`, `sRNAdata_average-YB`,`sRNAdata_extra-tj-g4_control_ox`,`sRNAdata_extra-tj-g4_YB_ox` )%>%
+  mutate(
+      #foldChange_OSC =  `sRNAdata_average-YB` / `sRNAdata_average-WT`,
+      foldChange_SOMA =  (`sRNAdata_extra-tj-g4_YB_ox`) / `sRNAdata_extra-tj-g4_control_ox` 
+  )%>%
+  select(-starts_with("sRNAdata_"))%>%
+  separate(FBgn, c("CLUSTER","PosInCluster"), sep = "-", remove = FALSE)%>%
+  mutate(
+    CLUSTER = case_when(
+      TYPE == "CLUSTER" ~ CLUSTER,
+      TRUE ~ "UTR"
+    ),
+    dotSIZE = case_when(
+      TYPE == "CLUSTER" ~ 1.5,
+      TRUE ~ 0.01
+    )
+  )
+
+# cluster_colors = okabe_ito
+p = PLOTtable %>% 
+  pivot_longer(cols = starts_with("foldChange"), names_to = "LIB", values_to = "COUNT")%>%
+  separate(LIB, c("foldChange","LIB"))%>%
+  mutate(
+    LIB = factor(LIB, levels = c("OSC","SOMA"))
+  )%>%
+  mutate(
+    TYPE = case_when(
+      grepl("flam", TYPE) ~ "flam",
+      grepl("20A", TYPE) ~ "20A",
+      grepl("77B", TYPE) ~ "77B",
+      TRUE ~ TYPE
+    )
+  )%>%
+ ggplot(aes(x=LIB,y=COUNT,color = TYPE, label=paste(FBgn,PosInCluster,LIB, sep="_")))+
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "CDS"),
+    aes(x = as.numeric(LIB) - 0.1, y = COUNT, color = TYPE),
+    width      = 0.3,   # controls horizontal spread
+    varwidth   = FALSE,  # fixed width
+    groupOnX   = FALSE,
+    size       = 0.01,
+    alpha      = 1
+  ) +
+  # UTR slightly to the right
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "UTR"),
+    aes(x = as.numeric(LIB) + 0.1, y = COUNT, color = TYPE),
+    width      = 0.3,
+    varwidth   = FALSE,
+    groupOnX   = FALSE,
+    size       = 0.01,
+    alpha      = 1
+  ) +
+  # CLUSTER centered on the original LIB positions (narrowed as well)
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "CLUSTER"),
+    aes(x = as.numeric(LIB), y = COUNT, color = TYPE),
+    width      = 0.4,
+    varwidth   = FALSE,  # or TRUE if you like varwidth for clusters
+    groupOnX   = TRUE,
+    size       = 1.3,
+    alpha      = 1
+  ) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red")+
+  labs(x="biogenesis-factor knocked-doww", y="fold-change compared to siGFP")+
+  scale_y_log10()+
+  scale_x_discrete()+
+  # scale_color_igv()+
+  scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +  # Add this line
+  scale_size_identity()+
+  # coord_flip(clip = "off")+
+  annotation_logticks(sides = "l", outside=FALSE) +
+  facet_row(~TISSUE)+
+  theme_cowplot(12)+
+  theme(
+
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    legend.position = "none",
+  )+
+  {}
+
+
+print(p)
+# ggplotly(p, tooltip = "label")
+ggsave("YB-foldChange_OSC_vs_Soma.pdf", p, width = 2, height = 5, units = "in", dpi = 300)
+
+```
+
+
+
+## stacked-bar chart of annotation sources
+```{r compare soma with OSC piRNAs - stacked-bar chart load-data source-analysis, echo=TRUE}
+# read in the data
+RAW  =  read_tsv("quantified-sources.txt") %>%
+  filter(ANN != "miRNA")
+
+#print table to give overview
+RAW
+```
+
+```{r compare soma with OSC piRNAs - stacked-bar chart - bar-chart OSC vs Soma , echo=TRUE, message=FALSE, warning=FALSE, fig.width=3, fig.height=5}
+
+
+ PLOTtable =   RAW %>% 
+  filter(GENO %in% c("WT","MTD_shPiwi_antiPiwi-IP-mouse_Kirsten_corr")) %>%
+    mutate(
+      COUNT = case_when(
+        ANN == "INTRON" ~ 0,
+        TRUE ~ COUNT
+      ),
+      GENO = case_when(
+        GENO == "WT" ~ "OSC_Piwi",
+        GENO == "MTD_shPiwi_antiPiwi-IP-mouse_Kirsten_corr" ~ "somaPiwi",
+        TRUE ~ GENO
+      ),
+      GENO = factor(GENO, levels = c("OSC_Piwi","somaPiwi"))
+    )%>%
+  separate(ANN, c("ANN","TEtype"), sep = ":!:", remove = TRUE)%>%
+  group_by(GENO, TYPE,ANN) %>%
+  summarise(COUNT = sum(COUNT)) %>%
+  mutate(
+    COUNT = COUNT / sum(COUNT)
+  )
+
+   PLOTtable$ANN = factor(PLOTtable$ANN, levels = c("INTRON" ,"5UTR","CDS", "3UTR","NONE","TE", "TE_AS"  ))
+  
+ p = PLOTtable %>%
+  ggplot(aes(x=GENO, y=COUNT, alluvium=ANN, fill=ANN))+
+       scale_x_discrete(expand = c(.2, .05)) +
+  geom_bar(stat = "identity", width = 0.2, color = "white", size = 0.2) +
+  geom_alluvium(width = 0.2, alpha = 0.7, 
+                curve_type = "sigmoid")+   # smoother curves
+   scale_fill_scico_d(palette = "navia", direction = -1) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_cowplot(12) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1)  # if labels are long
+  ) +
+  labs(x = NULL, y = "Proportion", fill = "Annotation")
+
+ print(p)
+
+  ggsave(paste("stackedBars_OSC_vs_somaPiwi.pdf",sep=""), p, width = 3, height = 5, units = "in", dpi = 300)
+  
+  
+
+```
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ###########################   size-profile  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+```{r size-profile, echo=TRUE, message=FALSE, warning=FALSE, fig.width=5, fig.height=7}
+for(CLASS in c("UTR","CDS","CLUSTER","ALL","ALL_YB")){
+    # read in the data
+    RAW  =  read_tsv(paste(CLASS,".size-profile.txt", sep=""))
+
+
+    get_inset <- function(df){
+      p <- df %>%
+        filter(LENGTH<25, LENGTH>19)%>%
+        ggplot( aes(x=LENGTH, y=miRNAperc)) +
+        geom_bar(stat="identity") + 
+        scale_y_continuous(limits=c(0,7.5))+
+        labs(x = "Length (nt)", y = "miRNA mapping reads n [normalized to 1M miRNAs]")+
+        theme_bw() +
+        theme(
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position = "none",
+          text = element_text(size = 15),
+          
+        )
+      return(p)
+    }
+
+    MAX=22.5
+    
+    # plot the data
+    RAW = RAW %>%
+      mutate(
+        miRNA = case_when(
+          is.na(miRNA) ~ 0,
+          TRUE ~ miRNA
+        ),
+        COUNT=OTHER*100/(sum(OTHER)+sum(miRNA)),
+        miRNAperc= miRNA*100/(sum(OTHER)+sum(miRNA))
+      )
+    
+     inset_plot <- get_inset(RAW) 
+
+    x = RAW %>%
+     ggplot( aes(x = LENGTH, y = COUNT)) +
+      geom_bar(stat = "identity") +
+      annotate("segment", x = 21, xend = 21, y = MAX/2-1, yend = MAX/2-5,
+              arrow = arrow())+
+      annotate("text", x = 21, y = MAX/2, label = "siRNA")+
+      scale_y_continuous(limits=c(0,MAX))+
+      scale_x_continuous(breaks = seq(18, 35, 1))+
+      labs(x = "Length (nt)", y = "Count [normalized to 1M miRNAs]")+
+      theme_bw() +
+      theme(
+        text = element_text(size = 22),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "none",
+        aspect.ratio=1
+      )
+    if(CLASS %in% c("ALL","ALL_YB")){
+      x = x +
+        annotation_custom(ggplotGrob(inset_plot), xmin = 30, xmax = 35, ymin = MAX*0.4, ymax = MAX) 
+
+    }
+    print(x)
+    ggsave( paste(CLASS,"size-profile.pdf", sep=""), x, dpi = 300, width = 10, height = 10)
+}
+```
+
+
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ###########################   TE deregulation upon YB or Armi knockdown  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+
+
+## load data
+```{r TE deregulation - load data and prepare RAW table}
+ # load data
+RAW_YB = read_tsv("DGE_siLuc_vs_siYB_PA.txt", col_names = TRUE)%>%
+  mutate(
+    GENO="siYB"
+  )%>%
+  {}
+
+RAW_ARMI = read_tsv("DGE_siLuc_vs_siARMI_PA.txt", col_names = TRUE)%>%
+  mutate(
+    GENO="siARMI"
+  )%>%
+  filter(log2FoldChange>1, baseMean>10)
+ {}
+
+RAW <- bind_rows(RAW_YB, RAW_ARMI)
+
+```
+
+## plot TE-fold-change
+```{r TE deregulation - plot TE deregulation, fig.width=10, fig.height=3}
+plotTABLE = RAW %>% 
+  filter(grepl("TE:", gene_id))%>%
+  filter(! grepl("_AS", gene_id))%>%
+  separate(gene_id, into=c("TE","gene_id"), sep = ":")
+
+
+
+order_levels <- plotTABLE %>%
+  filter(GENO=="siARMI")%>%
+  arrange(desc(log2FoldChange)) %>%
+  pull(gene_id)
+
+plotTABLE <- plotTABLE %>%
+  mutate(gene_id = factor(gene_id, levels = order_levels)) %>%
+  filter(! is.na(gene_id))
+
+plotTABLE %>%
+  ggplot(aes(x=gene_id, y=log2FoldChange, fill=GENO))+
+      geom_bar(stat="identity", position=position_dodge())+
+      theme_cowplot(12)+
+      labs(y="log2 Fold-enrichment over WT", x="Transposon")+
+      theme(
+        legend.position = c(0.5, 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust=1)
+      )
+  # facet_row(~LIB)
+      scale_fill_manual(values=scico(10, palette="navia", categorical=TRUE, direction=1))
+
+ggsave("TE_deregulation.pdf", width = 5, height =2, units = "in", dpi = 300)
+
+```
+
+## plot non-TE volcano
+```{r TE deregulation - plot TE deregulation - volcano, fig.width=3, fig.height=3}
+plotTABLE = RAW %>% 
+  filter(!grepl("TE:", gene_id), GENO=="siYB")
+
+plotTABLE %>%
+  ggplot(aes(x=log2FoldChange, y=1/padj))+
+      geom_point(size=0.3, alpha=0.4)+
+      geom_point_rast(data = . %>% filter(gene_id == "fs(1)Yb"), color="red")+
+      theme_cowplot(12)+
+      scale_y_log10()+
+      labs(y="p-value adjusted", x="fold deregulation [log2]")+
+      theme(
+        aspect.ratio = 1,
+        legend.position = c(0.5, 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust=1)
+      )
+
+ggsave("gene_deregulation_in_Yb.pdf", width = 3, height =3, units = "in", dpi = 300)
+
+```

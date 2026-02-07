@@ -17,7 +17,8 @@ This study was based on the genome of the OSC cells. The genome is available at:
 
 ## R-code used to generate figure-panels for the publication
 
-R-Notebook files are deposited in this repository in code format and pdf after knitting. 
+R-Notebook files containing the code to generate figure-panels presented in the manuscript. 
+HTML files with embedded graphs in original format can be directly viewed at: https://brenneckelab.imba.oeaw.ac.at/Publication_Data/2026_Handler_YB/Figures_raw-data/ 
 
 ## Repositories related to the figures presented in the publication
 
