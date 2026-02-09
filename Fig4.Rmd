@@ -1,0 +1,1068 @@
+---
+title: "Fig-4 - A Naïve RNA Sampling Core Enables Adaptive piRNA Specificity Against Transposable Elements - 2026-02"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+date: "2026-02-09"
+---
+# setup R-environment and load/prepare data
+
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+if (knitr::is_latex_output()) {
+  MODE <- "PDF"
+} else if (knitr::is_html_output()) {
+  MODE <- "HTML"
+} else {
+  MODE <- "OTHER"
+}
+
+print(MODE)
+```
+
+
+
+load all packages required
+```{r load-packages, echo=TRUE, message=FALSE, warning=FALSE}
+library(cowplot)
+library(ggforce)
+library(ggpubr)
+library(ggrepel)
+library(knitr)
+library(paletteer)
+library(ggalt)
+library(plotly)
+library(ggbeeswarm)
+library(scico)
+library(cividis)
+library(ggrastr)
+library(tools)
+library(mgcv)  # For fitting GAM model
+library(h2o)
+library(Metrics)
+library(zoo)
+library(scam)
+library(DescTools)
+library(tidyverse)
+
+# library(PCAtools)
+# library(gridExtra)
+# library(forcats)
+library(ggrastr)
+# library(DescTools)
+
+
+theme_set(theme_cowplot(12))
+
+```
+
+
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ####################   apply UTR model to piRNA clusters ###################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+
+## load data for UTR
+```{r model flamenco - load data}
+
+#load data
+X= read_tsv("tiles.100_-600_750_quantified.allLIBs.txt")
+
+
+VARI="sRNAdata_average_WT"
+NUCclass="diNUC_"
+
+  # filter data
+  TABLEfilt_orig= X %>%
+    filter(!str_detect(FBgn,"GL"))%>%
+    filter(str_detect(FBgn,"UTR")|str_detect(FBgn,"CLUSTER")|str_detect(FBgn,"CDS"))%>%
+    select(-contains("ARMI"))%>%
+    mutate(
+      TYPE = case_when(
+        str_detect(FBgn,"UTR") ~ "UTR",
+        str_detect(FBgn,"CDS") ~ "CDS",
+        str_detect(FBgn,"CLUSTER") ~ "CLUSTER",
+        TRUE ~ "Other"
+      )
+    )%>%
+    separate(FBgn, c("CLUSTERname","tilePOS"), sep=":!:", remove=FALSE,convert=TRUE)%>%
+  separate(CLUSTERname, c("CLUSTERname"), sep="_", remove=TRUE,convert=TRUE)%>%
+  separate(CLUSTERname, c("clusterID","POS"), sep="-", remove=FALSE,convert=TRUE)%>%
+  mutate(POS = case_when(
+    TYPE == "CLUSTER" ~(POS-1)*500+(tilePOS-1)*100,
+    TRUE ~ tilePOS ))%>%
+  arrange(POS)%>%
+  filter(POS<600000)%>%
+        rename(sRNAdata_average_WT = `sRNAdata_average-WT_CLUSTERuniq`,
+           sRNAdata_average_YB = `sRNAdata_average-YB_CLUSTERuniq`)%>%
+
+
+    {}
+  
+
+
+  #log-transform
+  TABLEfilt_X <- TABLEfilt_orig %>%
+    filter(!is.na(sRNAdata_average_WT),!is.na(sRNAdata_average_WT),!is.infinite(sRNAdata_average_WT), sRNAdata_average_WT>0.001)%>%
+    select( starts_with(NUCclass),CHR,FBgn, VARI,sRNAdata_average_WT,sRNAdata_average_YB, RNAseq_RPKM,TYPE,TTseq_RPKM,nPOS,fullLengthUNIQ,UNIQinclCLUSTERuniq,UNIQ,TEorientation,TEorientation_nucTILE, POS)%>%
+
+    {}
+  
+  
+  
+```
+  
+
+## flamenco piRNA production - efficiency
+### prepare data
+```{r model flamenco - prepare data for TT/RNAseq modelling}
+
+
+TABLEfilt_CLUSTER = TABLEfilt_X %>% 
+  mutate(nPOS = nPOS+20,
+         UTR_LENGTH=100000)%>%
+  filter(str_detect(FBgn,"flam") )%>%
+  select(CHR,FBgn, VARI,sRNAdata_average_WT, RNAseq_RPKM,TYPE, starts_with(NUCclass),TTseq_RPKM,nPOS,fullLengthUNIQ,UNIQinclCLUSTERuniq,UNIQ,TEorientation,TEorientation_nucTILE,POS )%>%
+  {}
+  
+TABLEfilt_Y = TABLEfilt_orig %>%
+  mutate(
+      across(
+        starts_with(c("sRNAdata_")),
+        ~.x / TTseq_RPKM,
+        .names = "TTnorm_{.col}"
+      ),
+      across(
+        starts_with(c("sRNAdata_")),
+        ~.x / RNAseq_RPKM,
+        .names = "RNAnorm_{.col}"
+      ),
+      across(
+        starts_with(c("CLIP_")),
+        ~.x / RNAseq_RPKM,
+        .names = "RNAnorm_{.col}"
+      )
+    )%>%
+
+  filter(POS<600000)%>%
+  mutate(
+    BIN =  as.factor(cut_interval(log10(TTnorm_sRNAdata_average_WT), n=5, labels = FALSE))
+  ) %>%
+  filter(! is.na(BIN))%>%
+  {}
+
+```
+
+### piRNA poduction flamenco vs genic
+```{r model flamenco - piRNA production flamenco vs genic, message=FALSE,warning=FALSE, fig.width = 6 ,fig.height = 4}
+
+# Get bin breakpoints
+bin_breaks <- TABLEfilt_Y %>%
+  group_by(BIN) %>%
+  summarise(minDATA = min(TTnorm_sRNAdata_average_WT, na.rm = TRUE)) %>%
+  pull(minDATA)
+
+# Remove first bin (we don’t need a line at the lowest boundary)
+bin_breaks <- sort(bin_breaks[-1])
+
+TABLEfilt_Y %>%
+  filter(UNIQinclCLUSTERuniq > 50 , sRNAdata_average_WT>0,RNAseq_RPKM>0, TTseq_RPKM>0)%>%
+    mutate(
+    dotSIZE = case_when(
+      TYPE == "CLUSTER" ~ 1.5,
+      TRUE ~ 0.01
+    )
+  )%>%
+  mutate(
+    TYPE = factor(TYPE, levels = c("CDS","UTR","CLUSTER"))
+  )%>%
+  ggplot(aes(x=TYPE,y=TTnorm_sRNAdata_average_WT,colour = TYPE))+
+  # geom_point()+
+  geom_quasirandom_rast( aes(size=dotSIZE), alpha=1, varwidth = TRUE, groupOnX = TRUE)+
+  geom_hline(yintercept = bin_breaks, linetype = "dashed", color = "red", size = 1) +
+  annotate("text", x = 1.4, y = bin_breaks, 
+           label = round(bin_breaks, 3), hjust = 1, vjust = 2, color = "red") +
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  stat_summary(
+    fun = median,
+    geom = "text",
+    aes(label = sprintf("%.2f", after_stat(y))),
+    vjust = -0.5,
+    size = 3,
+    color = "red"
+  )+
+  scale_y_log10(limits=c(0.0001,3500))+
+  # scale_color_igv()+
+  scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +  # Add this line
+  scale_size_identity()+
+  coord_cartesian(clip = "off")+
+  labs(
+    y = "piRNA efficiency (sRNA / RNAseq)"
+  )+
+  annotation_logticks(sides = "l", outside=FALSE) +
+  theme_cowplot(12)+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank()
+  )+
+  {}
+
+ggsave("flamenco_vs_UTR_vs_CDS_piRNA_efficiency.pdf", width = 4, height = 5)
+
+TABLEfilt_Y %>%
+  filter(UNIQinclCLUSTERuniq > 50 , sRNAdata_average_WT>0,RNAseq_RPKM>0, TTseq_RPKM>0)%>%
+    mutate(
+    dotSIZE = case_when(
+      TYPE == "CLUSTER" ~ 1.5,
+      TRUE ~ 0.01
+    )
+  )%>%
+  mutate(
+    TYPE = factor(TYPE, levels = c("CDS","UTR","CLUSTER"))
+  )%>%
+  ggplot(aes(x=TYPE,y=TTnorm_sRNAdata_average_YB,colour = TYPE))+
+  # geom_point()+
+  geom_quasirandom_rast( aes(size=dotSIZE), alpha=1, varwidth = TRUE, groupOnX = TRUE)+
+  scale_y_log10(limits=c(0.0001,3500))+
+  # scale_color_igv()+
+  scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +  # Add this line
+  scale_size_identity()+
+  coord_cartesian(clip = "off")+
+  labs(
+    y = "piRNA efficiency (sRNA / RNAseq)"
+  )+
+  stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  stat_summary(
+    fun = median,
+    geom = "text",
+    aes(label = sprintf("%.2f", after_stat(y))),
+    vjust = -0.5,
+    size = 3,
+    color = "red"
+  )+
+  annotation_logticks(sides = "l", outside=FALSE) +
+  theme_cowplot(12)+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank()
+  )+
+  {}
+
+ggsave("flamenco_vs_UTR_vs_CDS_piRNA_efficiency.YB.pdf", width = 4, height = 5)
+
+
+
+```
+
+### nucleotide correlation per bin
+```{r model flamenco - nucleotide correlation per bin, message=FALSE,warning=FALSE, fig.width = 6 ,fig.height = 4}
+
+TABLEfilt_Y %>%
+  filter(UNIQinclCLUSTERuniq > 50 ,RNAseq_RPKM>0, TTseq_RPKM>0)%>%
+  pivot_longer(cols=starts_with("diNUC_TT"), names_to = "NUC", values_to = "VAL")%>%
+  mutate(
+    TYPE = factor(TYPE, levels = c("CDS","UTR","CLUSTER")),
+    BIN= as.numeric(BIN)
+  )%>%
+  ggplot(aes(y=VAL))+
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "UTR"),
+    aes(x = 1+0 + 0.2, color = TYPE),
+    width      = 0.3,
+    varwidth   = FALSE,
+    groupOnX   = FALSE,
+    size       = 0.01,
+    alpha      = 1
+  ) +
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "CDS"),
+    aes(x = 1 - 0.2, color = TYPE),
+    width      = 0.3,   # controls horizontal spread
+    varwidth   = FALSE,  # fixed width
+    groupOnX   = FALSE,
+    size       = 0.01,
+    alpha      = 1
+  ) +
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "CLUSTER"),
+    aes(x = 1 , color = TYPE),
+    width      = 0.3,
+    varwidth   = FALSE,
+    groupOnX   = FALSE,
+    size       = 0.1,
+    alpha      = 1
+  ) +
+  facet_row(~BIN)+
+  scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +  # Add this line
+  # scale_y_log10()+
+  coord_cartesian( ylim = c(0,25))+
+  theme_cowplot(12)+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    axis.line.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank()
+  )+
+  {}
+
+
+ggsave("flamenco_vs_UTR_vs_CDS_nucleotide_content_per_bin.UU.pdf", width = 8.5, height = 5)
+
+
+TABLEfilt_Y %>%
+  filter(UNIQinclCLUSTERuniq > 50 ,RNAseq_RPKM>0, TTseq_RPKM>0)%>%
+  pivot_longer(cols=starts_with("NUC_T"), names_to = "NUC", values_to = "VAL")%>%
+  mutate(
+    TYPE = factor(TYPE, levels = c("CDS","UTR","CLUSTER")),
+    BIN= as.numeric(BIN)
+  )%>%
+  ggplot(aes(y=VAL))+
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "UTR"),
+    aes(x = 1+0 + 0.2, color = TYPE),
+    width      = 0.3,
+    varwidth   = FALSE,
+    groupOnX   = FALSE,
+    size       = 0.01,
+    alpha      = 1
+  ) +
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "CDS"),
+    aes(x = 1 - 0.2, color = TYPE),
+    width      = 0.3,   # controls horizontal spread
+    varwidth   = FALSE,  # fixed width
+    groupOnX   = FALSE,
+    size       = 0.01,
+    alpha      = 1
+  ) +
+  geom_quasirandom_rast(
+    data = . %>% filter(TYPE == "CLUSTER"),
+    aes(x = 1 , color = TYPE),
+    width      = 0.3,
+    varwidth   = FALSE,
+    groupOnX   = FALSE,
+    size       = 0.01,
+    alpha      = 1
+  ) +
+  stat_summary(
+    data = . %>% filter(TYPE == "CLUSTER"),
+    aes(x = 1, y = VAL),
+    fun = median,
+    geom = "crossbar",
+    width = 0.5,
+    fatten = 1.5,
+    color = "red",
+    inherit.aes = FALSE
+  )+
+  stat_summary(
+    data = . %>% filter(TYPE == "UTR"),
+    aes(x = 1+0.2, y = VAL),
+    fun = median,
+    geom = "crossbar",
+    width = 0.5,
+    fatten = 1.5,
+    color = "red",
+    inherit.aes = FALSE
+  )+
+  stat_summary(
+    data = . %>% filter(TYPE == "CDS"),
+    aes(x = 1-0.2, y = VAL),
+    fun = median,
+    geom = "crossbar",
+    width = 0.5,
+    fatten = 1.5,
+    color = "red",
+    inherit.aes = FALSE
+  )+
+  facet_row(~BIN)+
+  scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +  # Add this line
+  # scale_y_log10()+
+  # coord_cartesian( ylim = c(0,25))+
+  theme_cowplot(12)+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    axis.line.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank()
+  )+
+  {}
+
+
+ggsave("flamenco_vs_UTR_vs_CDS_nucleotide_content_per_bin.U.pdf", width = 3, height = 5)
+```
+
+
+
+## predicting flamenco
+
+### predict TTseq
+```{r model flamenco - model TTseq over flamenco , message=FALSE,warning=FALSE, fig.width = 6 ,fig.height = 4}
+# Filter and prepare the data
+TTdata <- TABLEfilt_CLUSTER %>%
+  filter(TTseq_RPKM > 1,fullLengthUNIQ >= 50) %>%
+  select(CHR,FBgn,POS, TTseq_RPKM)%>%
+    {}
+
+# Fit a monotonic decreasing smooth curve using scam
+scam_fit_TTseq <- scam(log10(TTseq_RPKM) ~ s(as.numeric(POS), bs = "mpd"), data = TTdata, sp=0.1)
+plot(scam_fit_TTseq)
+
+#predict on fake data
+fakeX= data.frame(
+  # FBgn=c("flam-1_CLUSTER:!:1","flam-2_CLUSTER:!:1","flam-3_CLUSTER:!:1","flam-4_CLUSTER:!:1","flam-81_CLUSTER:!:1","flam-88_CLUSTER:!:1","flam-89_CLUSTER:!:1","flam-90_CLUSTER:!:1","flam-665_CLUSTER:!:1","flam-666_CLUSTER:!:1","flam-667_CLUSTER:!:1","flam-668_CLUSTER:!:1","flam-1164_CLUSTER:!:1","flam-1165_CLUSTER:!:1","flam-1166_CLUSTER:!:1","flam-1167_CLUSTER:!:1"),
+  # VAL=c(750,750,750,750,180,180,180,180,20,20,20,20,1,1,1,1)
+  # )%>%
+  FBgn=c("flam-1_CLUSTER:!:1","flam-2_CLUSTER:!:1","flam-3_CLUSTER:!:1","flam-4_CLUSTER:!:1","flam-81_CLUSTER:!:1","flam-88_CLUSTER:!:1","flam-89_CLUSTER:!:1","flam-90_CLUSTER:!:1","flam-665_CLUSTER:!:1","flam-666_CLUSTER:!:1","flam-667_CLUSTER:!:1","flam-668_CLUSTER:!:1","flam-1164_CLUSTER:!:1","flam-1165_CLUSTER:!:1","flam-1166_CLUSTER:!:1","flam-1167_CLUSTER:!:1"),
+  TTseq_RPKM=c(700,700,700,700,200,200,200,200,10,10,10,10,1.5,1.5,1.5,1.5)
+  )%>%
+  separate(FBgn, c("CLUSTERname","tilePOS"), sep=":!:", remove=FALSE,convert=TRUE)%>%
+  separate(CLUSTERname, c("CLUSTERname"), sep="_", remove=TRUE,convert=TRUE)%>%
+  separate(CLUSTERname, c("clusterID","POS"), sep="-", remove=FALSE,convert=TRUE)%>%
+  mutate(POS = (POS-1)*500+(tilePOS-1)*100)%>%
+  arrange(POS)
+
+FAKEscam_fit_TTseq <- scam(log10(TTseq_RPKM) ~ s(as.numeric(POS), bs = "mpd"), data = fakeX, sp=0.1)
+plot(FAKEscam_fit_TTseq)
+
+# Add the fitted values to the data frame 
+TTdata = TABLEfilt_CLUSTER %>%
+  filter(TTseq_RPKM > 1,UNIQinclCLUSTERuniq >= 50)
+TTdata$Fitted_VAL <- 10^predict(scam_fit_TTseq,newdata = data.frame(POS = TTdata$POS))
+TTdata$Fitted_fakeVAL <- 10^predict(FAKEscam_fit_TTseq,newdata = data.frame(POS = TTdata$POS))
+
+
+# Plot the original data and the fitted curve
+p=TTdata %>%
+  ggplot( aes(x = as.numeric(POS), y = TTseq_RPKM)) +
+  geom_point(data= . %>% filter( fullLengthUNIQ > 50),aes(color = "Measured TTseq-RPKM",text=paste(FBgn,TTseq_RPKM,sep="-"))) +  # Original data points with legend label
+  geom_line(aes(y = Fitted_VAL, color = "Predicted TTseq-RPKM"), linetype = "dotted", size=1)+
+  # geom_line(aes(y = Fitted_fakeVAL), linetype = "dotted", 
+  #           size = 1, color="orange") +  # Fitted curve with legend label
+  labs(title = "Monotonic Decreasing Curve Fit", 
+       x = "Position on Flamenco", 
+       y = "TTseq RPKM", 
+       color = element_blank(), 
+       linetype = element_blank()) +  # Add legend title
+  theme_cowplot(12) +
+  scale_color_manual(values = c("Measured TTseq-RPKM" = "black","Predicted TTseq-RPKM" = "orange")) +  # Custom colors
+  scale_linetype_manual(values = c("Predicted TTseq-levels" = "dotted"))+  # Custom linetype
+  theme(
+    #legend inside plotting area
+    legend.position = c(0.6, 0.8)
+  )
+print(p)
+pp=ggplotly(p, tooltip="text")
+pp
+ggsave("flamenco_TTseq_fit.pdf", p, width = 8, height = 5)
+
+# Plot the original data and the fitted curve
+p=ggplot(TTdata, aes(x = as.numeric(POS), y = TTseq_RPKM)) +
+  geom_point(data= . %>% filter( fullLengthUNIQ > 50),aes(color = "Measured TTseq-RPKM",text=paste(FBgn,TTseq_RPKM,sep="-"))) +  # Original data points with legend label
+  geom_line(aes(y = Fitted_VAL, color = "Predicted TTseq-RPKM"), linetype = "dotted", size = 1) +  # Fitted curve with legend label
+  # geom_line(aes(y = Fitted_fakeVAL), linetype = "dotted", 
+  #           size = 1, color="orange") +  # Fitted curve with legend label
+  scale_y_log10()+
+  labs(title = "Monotonic Decreasing Curve Fit", 
+       x = "Position on Flamenco", 
+       y = "log10 - TTseq RPKM", 
+       color = element_blank(), 
+       linetype = element_blank()) +  # Add legend title
+  theme_cowplot(12) +
+  scale_color_manual(values = c("Measured TTseq-RPKM" = "black","Predicted TTseq-RPKM" = "orange")) +  # Custom colors
+  scale_linetype_manual(values = c("Predicted TTseq-levels" = "dotted"))+  # Custom linetype
+  theme(
+    #legend inside plotting area
+    legend.position = c(0.6, 0.8)
+  )
+print(p)
+
+pp=ggplotly(p, tooltip="text")
+pp
+ggsave("flamenco_TTseq_fit.log10.pdf", p, width = 8, height = 5)
+
+
+```
+
+### predict RNAseq levels
+```{r model flamenco - model RNAseq over flamenco, message=FALSE,warning=FALSE, fig.width = 6 ,fig.height = 4}
+
+# Filter and prepare the data
+RNAdata <- TABLEfilt_CLUSTER %>%
+  filter(RNAseq_RPKM > 1, POS>2500 ,fullLengthUNIQ >= 50 ) %>%
+  select(CHR,FBgn,POS, RNAseq_RPKM)%>%
+    {}
+
+# Fit a monotonic decreasing smooth curve using scam
+library(scam)
+scam_fit_RNAseq <- scam(log10(RNAseq_RPKM) ~ s(as.numeric(POS), bs = "mpd"), data = RNAdata, sp=0.1)
+plot(scam_fit_RNAseq)
+
+#predict on fake data
+fakeX= data.frame(
+  # FBgn=c("flam-1_CLUSTER:!:1","flam-2_CLUSTER:!:1","flam-3_CLUSTER:!:1","flam-4_CLUSTER:!:1","flam-81_CLUSTER:!:1","flam-88_CLUSTER:!:1","flam-89_CLUSTER:!:1","flam-90_CLUSTER:!:1","flam-665_CLUSTER:!:1","flam-666_CLUSTER:!:1","flam-667_CLUSTER:!:1","flam-668_CLUSTER:!:1","flam-1164_CLUSTER:!:1","flam-1165_CLUSTER:!:1","flam-1166_CLUSTER:!:1","flam-1167_CLUSTER:!:1"),
+  # VAL=c(750,750,750,750,180,180,180,180,20,20,20,20,1,1,1,1)
+  # )%>%
+  FBgn=c("flam-1_CLUSTER:!:1","flam-2_CLUSTER:!:1","flam-3_CLUSTER:!:1","flam-4_CLUSTER:!:1","flam-81_CLUSTER:!:1","flam-88_CLUSTER:!:1","flam-89_CLUSTER:!:1","flam-90_CLUSTER:!:1","flam-665_CLUSTER:!:1","flam-666_CLUSTER:!:1","flam-667_CLUSTER:!:1","flam-668_CLUSTER:!:1","flam-1164_CLUSTER:!:1","flam-1165_CLUSTER:!:1","flam-1166_CLUSTER:!:1","flam-1167_CLUSTER:!:1"),
+  RNAseq_RPKM=c(400,400,400,400,90,90,90,90,7,7,7,7,1,1,1,1)
+  )%>%
+  separate(FBgn, c("CLUSTERname","tilePOS"), sep=":!:", remove=FALSE,convert=TRUE)%>%
+  separate(CLUSTERname, c("CLUSTERname"), sep="_", remove=TRUE,convert=TRUE)%>%
+  separate(CLUSTERname, c("clusterID","POS"), sep="-", remove=FALSE,convert=TRUE)%>%
+  mutate(POS = (POS-1)*500+(tilePOS-1)*100)%>%
+  arrange(POS)
+
+FAKEscam_fit_RNAseq <- scam(log10(RNAseq_RPKM) ~ s(as.numeric(POS), bs = "mpd"), data = fakeX, sp=0.1)
+plot(FAKEscam_fit_RNAseq)
+
+# Add the fitted values to the data frame 
+
+RNAdata = TABLEfilt_CLUSTER %>%
+  filter(RNAseq_RPKM > 1,UNIQinclCLUSTERuniq >= 50)
+RNAdata$Fitted_VAL <- 10^predict(scam_fit_RNAseq,newdata = data.frame(POS = RNAdata$POS))
+RNAdata$Fitted_fakeVAL <- 10^predict(FAKEscam_fit_RNAseq,newdata = data.frame(POS = RNAdata$POS))
+
+
+# Plot the original data and the fitted curve
+p=ggplot(RNAdata, aes(x = as.numeric(POS), y = RNAseq_RPKM)) +
+  geom_point(data= . %>% filter( fullLengthUNIQ > 50, POS>5000 ),aes(color = "Measured RNAseq-RPKM",text=paste(FBgn,RNAseq_RPKM,sep="-"))) +  # Original data points with legend label
+  geom_line(aes(y = Fitted_VAL, color = "Predicted RNAseq-RPKM"), linetype = "dotted", size = 1) +  # Fitted curve with legend label
+ labs(title = "Monotonic Decreasing Curve Fit", 
+       x = "Position on Flamenco", 
+       y = "RNAseq RPKM", 
+       color = element_blank(), 
+       linetype = element_blank()) +  # Add legend title
+  theme_cowplot(12) +
+  scale_color_manual(values = c("Measured RNAseq-RPKM" = "black","Predicted RNAseq-RPKM" = "orange")) +  # Custom colors
+  scale_linetype_manual(values = c("Predicted RNAseq-RPKM" = "dotted"))+  # Custom linetype
+  theme(
+    #legend inside plotting area
+    legend.position = c(0.6, 0.8)
+  )
+print(p)
+pp=ggplotly(p, tooltip="text")
+pp
+ggsave("flamenco_RNAseq_fit.pdf", p, width = 8, height = 5)
+
+# Plot the original data and the fitted curve
+p=ggplot(RNAdata, aes(x = as.numeric(POS), y = RNAseq_RPKM)) +
+  geom_point(data= . %>% filter( fullLengthUNIQ > 50, POS>5000 ),aes(color = "Measured RNAseq-RPKM",text=paste(FBgn,RNAseq_RPKM,sep="-"))) +  # Original data points with legend label
+  geom_line(aes(y = Fitted_VAL, color = "Predicted RNAseq-RPKM"), linetype = "dotted", size = 1) +  # Fitted curve with legend label
+  scale_y_log10()+
+  labs(title = "Monotonic Decreasing Curve Fit", 
+       x = "Position on Flamenco", 
+       y = "log10 - RNAseq RPKM", 
+       linetype = element_blank()) +  # Add legend title
+  theme_cowplot(12) +
+  scale_color_manual(values = c("Measured RNAseq-RPKM" = "black","Predicted RNAseq-RPKM" = "orange")) +  # Custom colors
+  scale_linetype_manual(values = c("Predicted RNAseq-RPKM" = "dotted"))+  # Custom linetype
+  theme(
+    #legend inside plotting area
+    legend.position = c(0.6, 0.8)
+  )
+print(p)
+
+
+
+
+pp=ggplotly(p, tooltip="text")
+pp
+ggsave("flamenco_RNAseq_fit.log10.pdf", p, width = 8, height = 5)
+
+```
+
+
+```{r model flamenco - add predicted RNA/TTseq values to analysis table}
+
+TABLEfilt_CLUSTER_PRED = TABLEfilt_CLUSTER
+
+TABLEfilt_CLUSTER_PRED %>%
+  filter(UNIQinclCLUSTERuniq > 80)%>%
+  ggplot(aes(POS,sRNAdata_average_WT ))+
+  geom_point()
+
+new_predictions_TTseq <- 10^predict(FAKEscam_fit_TTseq, newdata = data.frame(POS = TABLEfilt_CLUSTER_PRED$POS)) 
+TABLEfilt_CLUSTER_PRED <- cbind(TABLEfilt_CLUSTER_PRED, TTseq_predicted_FAKE = new_predictions_TTseq)
+
+new_predictions_RNAseq <- 10^predict(FAKEscam_fit_RNAseq, newdata = data.frame(POS = TABLEfilt_CLUSTER_PRED$POS)) 
+TABLEfilt_CLUSTER_PRED <- cbind(TABLEfilt_CLUSTER_PRED, RNAseq_predicted_FAKE = new_predictions_RNAseq)
+
+new_predictions_TTseq <- 10^predict(scam_fit_TTseq, newdata = data.frame(POS = TABLEfilt_CLUSTER_PRED$POS)) 
+TABLEfilt_CLUSTER_PRED <- cbind(TABLEfilt_CLUSTER_PRED, TTseq_predicted = new_predictions_TTseq)
+
+new_predictions_RNAseq <- 10^predict(scam_fit_RNAseq, newdata = data.frame(POS = TABLEfilt_CLUSTER_PRED$POS)) 
+TABLEfilt_CLUSTER_PRED <- cbind(TABLEfilt_CLUSTER_PRED, RNAseq_predicted = new_predictions_RNAseq)
+
+
+TABLEfilt_CLUSTER_PRED %>%
+  ggplot(aes(x=RNAseq_RPKM, y=RNAseq_predicted, color=POS))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 1)+
+  scale_x_log10()+
+  scale_y_log10()+
+  theme_bw()+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 12),
+    axis.title =element_text(size = 12),
+    aspect.ratio = 1
+  )
+
+TABLEfilt_CLUSTER_PRED %>%
+    separate(FBgn, c("CLUSTERname","tilePOS"), sep=":!:", remove=FALSE,convert=TRUE)%>%
+    separate(CLUSTERname, c("CLUSTERname"), sep="_", remove=TRUE,convert=TRUE)%>%
+    separate(CLUSTERname, c("clusterID","POS"), sep="-", remove=FALSE,convert=TRUE)%>%
+    mutate(POS = (POS-1)*500+(tilePOS-1)*100)%>%  
+  filter(POS<650000)%>%
+  select(POS,RNAseq_RPKM, RNAseq_predicted, TTseq_RPKM, TTseq_predicted, RNAseq_predicted_FAKE, TTseq_predicted_FAKE, FBgn,fullLengthUNIQ,nPOS) %>%
+  pivot_longer(-c(POS,FBgn,fullLengthUNIQ))%>%
+  mutate(
+    CLASS= case_when(
+      str_detect(name,"RNAseq") ~ "RNAseq",
+      str_detect(name,"TTseq") ~ "TTseq",
+      TRUE ~ "Unknown"
+    )
+  )%>%
+  ggplot(aes(x=POS, y=value, color=name))+
+  geom_point(data=.%>%filter(str_detect(name,"RPKM")&fullLengthUNIQ>50),size=0.2)+
+  geom_smooth(data=.%>%filter(str_detect(name,"RPKM")&fullLengthUNIQ>50))+
+  geom_smooth(data=.%>%filter(!str_detect(name,"RPKM")))+
+  facet_row(~CLASS)+
+  scale_y_log10()+
+  # scale_y_continuous(limits=c(0,1000))+
+  theme_bw()+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 12),
+    axis.title =element_text(size = 12),
+    aspect.ratio = 1
+  )
+
+#introduce new column into tablefilt with either predicted or original TTseq_RPKM
+TABLEfilt_CLUSTER_PRED <- TABLEfilt_CLUSTER_PRED %>%
+  mutate(
+    TTseq_original = TTseq_RPKM,
+    TTseq_RPKM = case_when(
+      # str_detect(FBgn, "flam")  ~ log10(TTseq_predicted_FAKE),
+      str_detect(FBgn, "flam")  ~ TTseq_predicted,
+      TRUE ~ TTseq_RPKM
+    ),
+    RNAseq_original = RNAseq_RPKM,
+    RNAseq_RPKM = case_when(
+      # str_detect(FBgn, "flam")  ~ log10(RNAseq_predicted_FAKE),
+      str_detect(FBgn, "flam")  ~ RNAseq_predicted,
+      TRUE ~ RNAseq_RPKM
+    )
+  )%>%
+  {}
+
+```
+
+
+## model piRNA output over flamenco
+```{r model flamenco - load model from the UTR-training }
+h2o.init(max_mem_size = "20g", nthreads = -1)
+h2o.removeAll()
+
+minLIMIT=-0.5
+maxLIMIT=5
+
+for(currMODEL in c("model_ablation_study_all_vari","model_ablation_study_no_nuc","model_ablation_study_no_tt")){
+# for(currMODEL in c("model_ablation_study_all_vari")){
+  print(currMODEL)
+
+
+  yb_ml <- h2o.loadModel(paste("../Fig.3/",currMODEL,sep=""))
+
+
+  TABLEfilt_CLUSTER_PRED_sRNA=TABLEfilt_CLUSTER_PRED %>%
+    filter(UNIQinclCLUSTERuniq > 50 , POS<600000, POS>5000, sRNAdata_average_WT>0,RNAseq_RPKM>0, TTseq_RPKM>0)
+    
+
+  TABLEfilt_CLUSTER_PRED_sRNA = TABLEfilt_CLUSTER_PRED_sRNA %>%
+    as.h2o()
+  
+  model = yb_ml
+  pred_FULL <- h2o.predict(model, TABLEfilt_CLUSTER_PRED_sRNA)
+
+  #calculate correlation between predicted and observed values
+  pred_dataFIN= as_tibble(TABLEfilt_CLUSTER_PRED_sRNA) %>%
+    bind_cols(PRED=as.vector(pred_FULL))%>%
+    mutate(
+      sRNAdata_average_WT = log10(sRNAdata_average_WT),
+      PRED = PRED
+    )
+
+  #plot scatter  
+  #calculate correlation
+  correlation <- cor.test(pred_dataFIN$PRED, pred_dataFIN$sRNAdata_average_WT)
+  #pseudo r squared of srna data vs pred
+  correlation = lm(pred_dataFIN$PRED ~ pred_dataFIN$sRNAdata_average_WT) %>% summary() %>% .$r.squared
+  
+  #calculate lin's concordance correlation coefficient
+  library(DescTools)
+  CCC_value = CCC(pred_dataFIN$sRNAdata_average_WT, pred_dataFIN$PRED)
+  
+  
+  #calculate lm for the offset calculation
+  #here I switch to Real ~ Pred 
+  fit <- lm( sRNAdata_average_WT ~PRED , data = pred_dataFIN)
+  intercept <- fit$coefficients[1]
+  slope <- fit$coefficients[2]
+  
+  #calculate data to plot model in ggplot
+  newdata <- data.frame(PRED = seq(min(pred_dataFIN$PRED), max(pred_dataFIN$PRED), length.out = 100))
+  newdata$x_pred <- predict(fit, newdata)
+  
+  #only pearson correlation
+  PEAR=cor.test( pred_dataFIN$PRED, pred_dataFIN$sRNAdata_average_WT, method = "pearson")%>% .$estimate
+  
+  SPEAR=SpearmanRho( pred_dataFIN$PRED, pred_dataFIN$sRNAdata_average_WT)
+  #plot predictions vs real data
+  p=pred_dataFIN %>% 
+    ggplot(aes(x=sRNAdata_average_WT,y=PRED, label=paste(FBgn,RNAseq_RPKM,TTseq_RPKM,sep="_") )) +
+    geom_point_rast(size=1.5,alpha=0.3,shape = 16, stroke = 0)+
+    geom_density_2d(color="black",alpha=0.5, size=0.6)+
+    #add the correlation coefficient to the plot
+    geom_abline(intercept = 0, slope = 1)+
+    geom_line(data=newdata, aes(y = PRED, x = x_pred,label=PRED), color = "red", linetype = "dotted", linewidth=2 ) +
+    scale_x_continuous(limits=c(minLIMIT,maxLIMIT))+
+    scale_y_continuous(limits=c(minLIMIT,maxLIMIT))+
+    # # facet_wrap(~nPOS)+
+    annotation_logticks(sides = "lb", outside=FALSE) +
+    annotate("text", x = 0.5, y = 3,
+    label = paste("R2: ", round(correlation, 2),"\n","CCC=",round(unlist(CCC_value[1])[1],2),"\n","PEAR=",round(PEAR,2),"\n","SPEAR=",round(SPEAR,2),"\n",paste("n=",nrow(pred_dataFIN),sep=""),sep=""),hjust = 0)+
+    theme_bw()+
+    scale_color_viridis_d()+
+    theme(
+          panel.grid.major = element_blank(),
+          axis.text = element_text(size = 12),
+          axis.title =element_text(size = 12),
+          panel.grid.minor = element_blank(),
+                  aspect.ratio = 1
+  )
+  
+    print(p)
+    ggsave(paste("Prediction_vs_real.large.cluster.",currMODEL,".log.pdf", sep=""),p , width = 6, height = 6, dpi = 300)
+
+    
+  
+      
+  #determine calibration curve
+  calibration_curve <- pred_dataFIN %>%
+    mutate(bin = cut_interval(PRED, n=20)) %>%
+    group_by(bin) %>%
+    summarize(
+      mean_predicted_probability = mean(PRED),
+      observed_frequency = mean(sRNAdata_average_WT)
+    )
+
+  # Plot calibration curve
+  p=calibration_curve %>% 
+  ggplot(aes(y=mean_predicted_probability, x=observed_frequency))+
+    geom_point()+
+    geom_smooth(method = "lm", se = TRUE, color = "blue") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+    labs(title = "Calibration Curve", x = "Mean Observed sRNA count", y = "Mean Predicted sRNA count") +
+    theme_cowplot(14)+
+    scale_x_log10(limits=c(0.7,5))+
+    scale_y_log10(limits=c(0.7,5))+
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.text = element_text(size = 12),
+      axis.title =element_text(size = 12),
+      aspect.ratio = 1
+    )
+  print(p)
+
+ ###############################################################################################
+    
+
+#determine fit of the data and calibration
+
+#calibrate model according to the determined value
+  pred_dataFIN = pred_dataFIN %>%
+    mutate(PRED_scaled = intercept + PRED)
+  
+  #calculate correlation
+  correlation <- cor.test( pred_dataFIN$PRED_scaled,pred_dataFIN$sRNAdata_average_WT)
+  #pseudo r squared of srna data vs pred
+  correlation = lm(pred_dataFIN$PRED_scaled ~ pred_dataFIN$sRNAdata_average_WT) %>% summary() %>% .$r.squared
+  
+  #calculate lin's concordance correlation coefficient
+  library(DescTools)
+  CCC_value = CCC(pred_dataFIN$PRED_scaled,pred_dataFIN$sRNAdata_average_WT)
+
+
+  fit_calibrated <- lm( sRNAdata_average_WT ~ PRED_scaled , data = pred_dataFIN)
+  intercept_calibrated <- fit_calibrated$coefficients[1]
+  slope_calibrated <- fit_calibrated$coefficients[2]
+  #calculate data to plot model in ggplot
+  newdata_calibrated <- data.frame(PRED_scaled = seq(min(pred_dataFIN$PRED_scaled), max(pred_dataFIN$PRED_scaled), length.out = 100))
+  newdata_calibrated$x_pred <- predict(fit_calibrated, newdata_calibrated)
+
+  #only pearson correlation
+  PEAR=cor.test(pred_dataFIN$sRNAdata_average_WT, pred_dataFIN$PRED_scaled, method = "pearson")%>% .$estimate
+  
+  SPEAR=SpearmanRho(pred_dataFIN$sRNAdata_average_WT, pred_dataFIN$PRED_scaled)
+  #plot predictions vs real data
+  p=pred_dataFIN %>% 
+    ggplot(aes(x=sRNAdata_average_WT,y=PRED_scaled, label=paste(FBgn,RNAseq_RPKM,TTseq_RPKM,sep="_"))) +
+    geom_point_rast(size=1.5,alpha=0.3,shape = 16, stroke = 0)+
+    geom_density_2d(color="black",alpha=0.5, size=0.6)+
+    # geom_smooth(method="lm")+
+    #add the correlation coefficient to the plot
+    geom_abline(intercept = 0, slope = 1)+
+    geom_line(data=newdata_calibrated, aes(y = PRED_scaled, x = x_pred,label=PRED_scaled), color = "red", linetype = "dotted", linewidth=2 ) +
+    scale_x_continuous(limits=c(minLIMIT,maxLIMIT))+
+    scale_y_continuous(limits=c(minLIMIT,maxLIMIT))+
+    # # facet_wrap(~nPOS)+
+    annotation_logticks(sides = "lb", outside=FALSE) +
+    annotate("text", x = 0.9, y = 3,
+      label = paste("R2: ", round(correlation, 3),"\n","CCC=",round(unlist(CCC_value[1])[1],2),"\n","PEAR=",round(PEAR,2),"\n","SPEAR=",round(SPEAR,2),"\n",paste("n=",nrow(pred_dataFIN),sep=""),sep=""),hjust = 0)+
+    theme_bw()+
+    scale_color_viridis_d()+
+    theme(
+          panel.grid.major = element_blank(),
+          axis.text = element_text(size = 12),
+          axis.title =element_text(size = 12),
+          panel.grid.minor = element_blank(),
+          aspect.ratio = 1
+  )
+  
+    print(p)
+    ggsave(paste("Prediction_vs_real.large.cluster.rescaled.",currMODEL,".log.pdf",sep=""),p , width = 6, height = 6, dpi = 300)
+    ggplotly(p, tooltip = c("label")) 
+
+
+     ###############################################################################################
+    
+
+#convert to real number space
+
+#calibrate model according to the determined value
+  pred_dataFIN_real = pred_dataFIN %>%
+    mutate(
+      PRED_scaled = 10^PRED_scaled,
+      sRNAdata_average_WT = 10^sRNAdata_average_WT)
+  
+  #calculate correlation
+  correlation <- cor.test( pred_dataFIN_real$PRED_scaled,pred_dataFIN_real$sRNAdata_average_WT)
+  #pseudo r squared of srna data vs pred
+  correlation = lm(pred_dataFIN_real$PRED_scaled ~ pred_dataFIN_real$sRNAdata_average_WT) %>% summary() %>% .$r.squared
+  
+  #calculate lin's concordance correlation coefficient
+  library(DescTools)
+  CCC_value = CCC(pred_dataFIN_real$PRED_scaled,pred_dataFIN_real$sRNAdata_average_WT)
+
+  #only pearson correlation
+  PEAR=cor.test(pred_dataFIN_real$sRNAdata_average_WT, pred_dataFIN_real$PRED_scaled, method = "pearson")%>% .$estimate
+  
+  SPEAR=SpearmanRho(pred_dataFIN_real$sRNAdata_average_WT, pred_dataFIN_real$PRED_scaled)
+  #plot predictions vs real data
+  p=pred_dataFIN_real %>% 
+    ggplot(aes(x=sRNAdata_average_WT,y=PRED_scaled, label=paste(FBgn,RNAseq_RPKM,TTseq_RPKM,sep="_"))) +
+    geom_point_rast(size=0.5,alpha=0.3)+
+    geom_density_2d(color="darkgrey",alpha=0.5)+
+    # geom_smooth(method="lm")+
+    #add the correlation coefficient to the plot
+    geom_abline(intercept = 0, slope = 1)+
+    scale_x_log10(limits=c(1,100000))+
+    scale_y_log10(limits=c(1,100000))+
+    # # facet_wrap(~nPOS)+
+    annotate("text", x = 2, y = 5000,
+      label = paste("R2: ", round(correlation, 2),"\n","CCC=",round(unlist(CCC_value[1])[1],2),"\n","PEAR=",round(PEAR,2),"\n","SPEAR=",round(SPEAR,2),"\n",paste("n=",nrow(pred_dataFIN),sep=""),sep=""),hjust = 0)+
+    theme_bw()+
+    scale_color_viridis_d()+
+    theme(
+          panel.grid.major = element_blank(),
+          axis.text = element_text(size = 12),
+          axis.title =element_text(size = 12),
+          panel.grid.minor = element_blank()
+  )
+  
+    print(p)
+    ggsave(paste("Prediction_vs_real.large.cluster.rescaled.",currMODEL,".pdf",sep=""),p , width = 6, height = 6, dpi = 300)
+    ggplotly(p, tooltip = c("label")) 
+    
+     ###############################################################################################
+
+  p=pred_dataFIN_real %>% 
+    pivot_longer(c(sRNAdata_average_WT,PRED_scaled), values_to = "VALUE", names_to = "LIB") %>%
+    ggplot(aes(x=POS, y=VALUE, color=LIB, text=FBgn))+
+    geom_point(size=0.2)+
+    scale_y_log10()+
+    facet_col(~TEorientation_nucTILE)
+
+  print(p)
+  ggplotly(p, tooltip = c("text"))
+  
+    p=pred_dataFIN_real %>% 
+    pivot_longer(c(sRNAdata_average_WT,PRED_scaled), values_to = "VALUE", names_to = "LIB") %>%
+    ggplot(aes(x=POS, y=VALUE, color=LIB))+
+    # geom_point(size=0.2)+
+    geom_smooth(method = "loess", span = 0.2, se = TRUE) +
+  scale_y_log10()
+    
+    print(p)
+    ggplotly(p, tooltip = c("text"))
+    
+  p=pred_dataFIN_real %>% 
+    mutate(RATIO= PRED_scaled/sRNAdata_average_WT)%>%
+    ggplot(aes(x=POS, y=RATIO))+
+    geom_point(aes(color=TEorientation_nucTILE),size=0.2)+
+    geom_smooth(method = "loess", span = 0.3, se = FALSE) +
+    scale_y_log10()
+    
+    print(p)
+
+    p=pred_dataFIN_real %>% 
+      mutate(
+        RATIO = PRED_scaled/sRNAdata_average_WT
+      )%>%
+    ggplot(aes(x=POS, y=RNAseq_RPKM, text=FBgn))+
+    geom_point(aes(color=TEorientation_nucTILE),size=0.2)+
+      geom_point(aes(y=RNAseq_original), size=0.2)+
+    # scale_y_log10()+
+    # facet_col(~TEorientation_nucTILE)+
+      geom_hline(yintercept = 1, linetype = "dashed", color = "red")
+
+  print(p)
+
+  
+  
+  library(zoo)
+  library(dplyr)
+  library(ggplot2)
+  
+  window_size <- 20
+  gap_threshold <- 5000  # Set this to the maximum allowed gap (in POS units) for continuous regions
+  
+  # Prepare data with rolling average and group by contiguous regions
+  p = pred_dataFIN_real %>%
+    pivot_longer(
+      c(sRNAdata_average_WT, PRED_scaled),
+      values_to = "VALUE",
+      names_to = "LIB"
+    ) %>%
+    arrange(LIB, POS) %>%
+    group_by(LIB) %>%
+    mutate(
+      ROLLING = rollmean(VALUE, k = window_size, fill = NA, align = "center"),
+      # Identify gaps
+      gap = c(0, diff(POS)),
+      region = cumsum(gap > gap_threshold)
+    ) %>%
+    filter(!is.na(ROLLING)) %>%
+    ggplot(aes(x = POS, y = ROLLING, color = LIB)) +
+      # geom_point(size = 0.3, aes(text=paste(FBgn,diNUC_TT,RNAseq_RPKM,TTseq_RPKM))) +
+    geom_point(aes(y= VALUE,text=paste(FBgn,diNUC_TT,RNAseq_RPKM,TTseq_RPKM)), size = 0.1, alpha = 0.5) +
+    geom_line(data = function(df) df[!is.na(df$ROLLING), ], aes(y = ROLLING,  group = interaction(region,LIB))) +
+    # geom_smooth()+
+    scale_color_scico_d(palette = "batlow", begin = 0.2, end = 0.8) +
+    labs(
+      title = "Rolling Average of sRNA and Predicted sRNA Levels",
+      x = "Position on Flamenco",
+      y = "Rolling Average of sRNA Levels"
+    ) +
+    theme_cowplot(14) +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.text = element_text(size = 12),
+      axis.title = element_text(size = 12),
+      legend.position= c(0.4, 0.9),  # Position the legend inside the plot area
+      aspect.ratio = 1
+    )+
+    {}
+  
+  print(p)
+  ggsave(paste("flamenco_sRNA_predicted_rolling-smooth.",currMODEL,".pdf",sep=""), p, width = 8, height = 5)
+  
+  p = p+
+    scale_y_log10() 
+  print(p)
+  ggsave(paste("flamenco_sRNA_predicted_rolling-smooth.",currMODEL,".log.pdf",sep=""), p, width = 8, height = 5)
+
+}
+
+```
+
+
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ###########################   plot nuc content over flamenco sense region  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# nuc-content
+
+```{r nuc content flamenco sense region, message=FALSE,warning=FALSE, fig.width = 6 ,fig.height = 6}
+
+RAW = read_tsv("nuc_content_flamenco-sense.txt", col_names = TRUE)%>%
+  {}
+
+
+plotTABLE = RAW %>%
+  pivot_longer( cols = starts_with('NUC_'), names_to = 'Nucleotide', values_to = 'Percentage') %>%
+  filter(Nucleotide == 'NUC_T') %>%
+  group_by(SEQ, Nucleotide) %>%
+  arrange(POS) %>%
+  mutate(
+    Percentage_smooth = rollmean(Percentage, k = 100, fill = NA, align = "center")
+  ) %>%
+  ungroup()
+
+END=plotTABLE %>%
+  select(POS)%>%
+  max()
+
+
+p = plotTABLE %>%
+  ggplot( aes(x = POS, y = Percentage_smooth)) +
+  geom_line(size=0.3) +
+  geom_vline(xintercept = c(1600,END-1600), linetype="dashed", color = "red", size=0.3)+
+  labs(title = 'Nucleotide Content Along Sequence', x = 'Position', y = 'Percentage (%)') +
+  # facet_grid(SEQ~Nucleotide, scales="free_x", space = "free")+
+  theme_cowplot()+
+  theme(
+    panel.grid.major.y = element_line(color = 'black', linetype = 'dashed', size = 0.3),
+    panel.grid.minor.y = element_line(color = 'grey', linetype = 'dashed', size = 0.3),
+  )
+print(p)
+  
+      ggsave(filename = "nuc-content-flam.U.pdf", plot = p, width = 10, height = 3)
+  
+
+```
