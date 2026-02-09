@@ -1,0 +1,545 @@
+---
+title: "Fig-5_ping-pong - A Naïve RNA Sampling Core Enables Adaptive piRNA Specificity
+  Against Transposable Elements - 2026-02"
+output:
+  html_document:
+    number_sections: true
+  html_notebook: default
+date: "2026-02-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+WD=getwd()
+```
+
+## load all packages required
+```{r load-packages, echo=TRUE, message=FALSE, warning=FALSE}
+library(cowplot)
+library(ggforce)
+library(ggrepel)
+library(ggpubr)
+library(knitr)
+library(ggrastr)
+library(DescTools)
+library(paletteer)
+library(ggalluvial)
+library(plotly)
+library(ggbeeswarm)
+library(h2o)
+library(ggokabeito)
+library(scico)
+library(tidyverse)
+
+theme_set(theme_bw())
+
+###################################################################################################
+# args  =  commandArgs(TRUE)
+# 
+# argmat  =  sapply(strsplit(args, "="), identity)
+# 
+# for (i in seq.int(length = ncol(argmat))) {
+#   assign(argmat[1, i], argmat[2, i])
+# }
+# 
+# # available variables
+# print(ls())
+###################################################################################################
+
+```
+
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+# ###########################  GL ping-pong analysis  ###############################################
+ ###############################################################################################
+ ###############################################################################################
+ ###############################################################################################
+
+
+```{r GL ping-pong analysis - prepare data , message=FALSE,warning=FALSE, fig.width = 6 ,fig.height = 6}
+
+### get the table file name for Brennecke linkage
+RAW=read_tsv("TE_piRNA_5p3p_matrix.txt",col_types=list(TE=col_character()))
+RAW
+
+
+
+```
+
+
+
+```{r GL ping-pong analysis - 3plus-5minus pingpong - slow for individual testing , message=FALSE,warning=FALSE, fig.width = 7 ,fig.height = 6}
+
+
+START=0
+END=19
+POSITION=9
+START.position_B=1-START
+LINK.position=POSITION-START+1
+SPAN=END-START+1
+THRESHOLD=-1
+
+TEs = RAW %>%
+  distinct(TE) %>%
+  filter(TE=="FBgn0010225")%>%
+  pull(TE)%>%
+  head(n=10000)
+
+results_old <- data.frame(
+  TE = character(),
+  mean = numeric(),
+  sd = numeric(),
+  z_score = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for(currTE in TEs){
+  # print(currTE)
+
+  TABLE = RAW %>%
+    filter(TE==currTE)
+
+  LENGTH = nrow(TABLE)
+  END.position_B = LENGTH-END
+
+  if( LENGTH >30){
+
+    table_a = TABLE$`5END_plus`
+    table_b = TABLE$`5END_minus`
+  
+    #not sure why this is required
+    if (POSITION > 0){
+      start.position_R = 1
+      end.position_R = LENGTH-POSITION
+    } else {
+      start.position_R = 1-POSITION
+      end.position_R = LENGTH
+    }
+  
+    ### define a data.frame and a vector
+    offset <- data.frame()
+    sum_offset = NULL
+  
+    ### core of Brennecke linkage calculation
+    offset <- sapply(1:SPAN, function(i) {
+      sapply(START.position_B:END.position_B, function(j) {
+        # Only calculate offset if the initiating 5' end is above threshold
+        if(table_a[j] > THRESHOLD) {
+          table_a[j]*table_b[j+START+i-1]/sum(table_a[(j+START):(j+END)])
+
+        } else {
+          0
+        }
+      })
+    })
+
+    offset[is.na(offset)] <- 0
+  
+    total_offset_sum = sum(offset)
+  
+    # Initialize sum_offset3 with zeros
+    sum_offset3 = rep(0, SPAN + 1)
+  
+    # Only calculate z-score and offsets if we have valid pairs
+    if(total_offset_sum > 0) {
+      for (i in 1:SPAN) {
+        sum_offset[i] = sum(offset[,i])/total_offset_sum
+      }
+
+      # plotNAME = paste("pingpong-offset - ", currTE, " - plus_5end vs minus_5end",sep="")
+      # fileNAME = paste(outDIR,currTE, ".plus.noFilter.pdf",sep="")
+    
+      # pdf(file=fileNAME,width=7,height=6)
+      # plot(sum_offset,
+      #      main=plotNAME,
+      #      xlab="offset [nt]",
+      #      ylim=c(0,0.6))
+      # dev.off()
+    
+      sum_offset2 = sum_offset[c(1:(LINK.position-1),(LINK.position+1):SPAN)]
+      m = mean(sum_offset2)
+      M = median(sum_offset2)
+      s = sd(sum_offset2)
+      z = (sum_offset[LINK.position]-m)/s
+      sum_offset3 = c(z,sum_offset)
+    }
+
+    if(m > 0){
+      # Write table regardless of whether we found valid pairs
+      print(paste("Writing table for TE:", currTE," with z-score:", z, " mean:", m, " median:",M, " sd:", s))
+      results_old <- rbind(results_old, data.frame(
+          TE = currTE,
+          mean = m,
+          median = M,
+          sd = s,
+          z_score = z,
+          stringsAsFactors = FALSE
+      ))    }
+    m=0
+  }
+}
+
+
+```
+
+
+```{r - GL ping-pong analysis - 5plus-5minus pingpong }
+library(parallel)
+library(tictoc)
+library(data.table)
+
+
+
+START=0
+END=19
+POSITION=9
+START.position_B=1-START
+LINK.position=POSITION-START+1
+SPAN=END-START+1
+THRESHOLD=0.01
+
+# Convert to data.table for faster filtering
+setDT(RAW)
+
+# Get first 100 unique TEs
+TEs = RAW[, unique(TE)][1:100]
+TEs = RAW[, unique(TE)]
+
+# Pre-create index ranges to avoid repeated calculations
+span_seq <- 1:SPAN
+start_end_seq <- START:END
+
+# Optimized processing function
+process_TE <- function(currTE) {
+  # Use data.table filtering
+  TABLE <- RAW[TE == currTE]
+  
+  LENGTH <- nrow(TABLE)
+  
+  if(LENGTH <= 30) return(NULL)
+  
+  END.position_B <- LENGTH - END
+  j_range <- START.position_B:END.position_B
+  j_len <- length(j_range)
+  
+  # Use get() for columns with special characters
+  table_a <- get("5END_plus", TABLE)
+  table_b <- get("5END_minus", TABLE)
+  
+  # Vectorized denominator calculation with matrix operations
+  idx_matrix <- outer(j_range, start_end_seq, "+")
+  denominators <- rowSums(matrix(table_a[idx_matrix], nrow = j_len))
+  
+  # Pre-allocate offset matrix
+  offset <- matrix(0, nrow = j_len, ncol = SPAN)
+  
+  # Vectorized offset calculation
+  mask <- table_a[j_range] > THRESHOLD
+  for(i in span_seq) {
+    idx <- j_range + START + i - 1
+    offset[, i] <- ifelse(mask & denominators > 0,
+                          table_a[j_range] * table_b[idx] / denominators,
+                          0)
+  }
+  
+  total_offset_sum <- sum(offset)
+  
+  if(total_offset_sum == 0) return(NULL)
+  
+  # Fast column sums
+  sum_offset <- .colSums(offset, j_len, SPAN) / total_offset_sum
+  
+  # Calculate z-score
+  sum_offset2 <- sum_offset[-LINK.position]
+  m <- mean(sum_offset2)
+  M <- median(sum_offset2)
+  
+  if(M == 0 ) return(NULL)
+  
+  s <- sd(sum_offset2)
+  z <- (sum_offset[LINK.position] - m) / s
+  
+  list(TE = currTE, responder = sum_offset[LINK.position], mean = m, median = M,  sd = s, z_score = z)
+}
+
+tic("Total processing time")
+
+# Parallel processing
+results_list <- mclapply(TEs, process_TE, 
+                         mc.cores = detectCores() - 1,
+                         mc.preschedule = FALSE,
+                         mc.set.seed = FALSE)
+
+
+# Fast combination with data.table
+results_df <- as.data.frame(rbindlist(results_list))
+
+total_time <- toc()
+
+cat("\n========================================\n")
+cat("Processing complete!\n")
+cat("========================================\n")
+cat("Total TEs processed:", length(TEs), "\n")
+cat("Valid results:", nrow(results_df), "\n")
+cat("Failed/skipped TEs:", length(TEs) - nrow(results_df), "\n")
+cat("Total time:", round(total_time$toc - total_time$tic, 2), "seconds\n")
+cat("Time per TE:", round((total_time$toc - total_time$tic) / length(TEs), 4), "seconds\n")
+cat("========================================\n\n")
+
+
+summary_stats <- results_df %>%
+  mutate(TYPEdetail = if_else(grepl("FBgn", TE), "GENE", "TE")) %>%
+  group_by(TYPEdetail) %>%
+  summarise(
+    mean_z = mean(z_score),
+    median_z = median(z_score),
+    .groups = "drop"
+  )
+
+cat("Summary of z-scores:\n")
+print(summary_stats)
+cat("\n")
+
+
+write_tsv(results_df, "GL_pingpong_results_5pplus_5pminus.txt")
+
+```
+
+
+```{r plot ping-pong}
+
+p = results_df %>%
+  filter( responder>0.01, median > 0.01, !grepl("random",TE))%>%
+  mutate(
+    TYPEdetail = case_when(
+      grepl("FBgn",TE) ~ "GENE",
+      TRUE ~ "TE"
+    )
+  )%>%
+  ggplot(aes(x=TYPEdetail, y=z_score))+
+  geom_quasirandom()+
+      stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  stat_summary(
+  fun = median,
+  geom = "text",
+  aes(label = sprintf("%.2f", after_stat(y))),
+  vjust = -0.5,
+  size = 3,
+  color = "red"
+  )
+  # scale_y_log10()
+
+
+print(p)
+
+ggsave("GL_pingpong.pdf", width = 6, height = 4)
+
+results_df %>%
+  filter( responder>0.01, median > 0.01)%>%
+  mutate(
+    TYPEdetail = case_when(
+      grepl("FBgn",TE) ~ "GENE",
+      TRUE ~ "TE"
+    )
+  )%>%
+  group_by(TYPEdetail) %>%
+  summarise(
+    mean_z = mean(z_score),
+    median_z = median(z_score),
+    .groups = "drop"
+  )
+
+transcriptQUANT = read_tsv("transcript_quantification.txt")
+
+```
+
+
+
+# phasing
+
+```{r - GL ping-pong analysis - 3plus-5plus phasing }
+library(parallel)
+library(tictoc)
+library(data.table)
+library(dplyr)
+
+# Parameters
+WINDOW_SIZE <- 10
+THRESHOLD <- -2
+
+setDT(RAW)
+TEs <- RAW[, unique(TE)]
+# TEs <- RAW[, unique(TE)][1:100]
+
+process_TE_phasing_fast <- function(currTE) {
+  # Fast filtering
+  DT <- RAW[TE == currTE]
+  if(nrow(DT) <= 30) return(NULL)
+  
+  analyze_strand <- function(t3, t5, start_off, end_off, target_off) {
+    len <- length(t3)
+    span <- end_off - start_off + 1
+    link_idx <- target_off - start_off + 1
+    
+    # 1. Fast Denominator: Rolling sum of 3' ends across the window
+    # frollsum is extremely fast C-based rolling sum
+    denom <- frollsum(t3, n = span, align = "center", fill = 0)
+    
+    # 2. Vectorized Offset Calculation
+    # Instead of looping over positions, we loop over offsets (only 21 iterations)
+    # We shift the 5' end vector relative to the 3' end vector
+    
+    profile <- numeric(span)
+    valid_mask <- t3 > THRESHOLD & denom > 0
+    
+    for (i in 1:span) {
+      shift <- start_off + i - 1
+      
+      # Shift t5 vector to align with t3 at this specific offset
+      if (shift > 0) {
+        t5_shifted <- c(t5[-(1:shift)], rep(0, shift))
+      } else if (shift < 0) {
+        t5_shifted <- c(rep(0, abs(shift)), t5[1:(len + shift)])
+      } else {
+        t5_shifted <- t5
+      }
+      
+      # Calculate weighted signal for this offset across all positions at once
+      profile[i] <- sum((t3[valid_mask] * t5_shifted[valid_mask]) / denom[valid_mask], na.rm = TRUE)
+    }
+    
+    total_signal <- sum(profile)
+    if (total_signal == 0) return(NULL)
+    
+    norm_profile <- profile / total_signal
+    
+    # 3. Z-score
+    bg <- norm_profile[-link_idx]
+    m <- mean(bg)
+    M <- median(bg)
+    s <- sd(bg)
+    
+    if (is.na(s) || s == 0) return(NULL)
+    
+    list(z = (norm_profile[link_idx] - m) / s, res = norm_profile[link_idx], m = m, M = m, s = s)
+  }
+  
+  # Sense: -9 to +10, target +1
+  p <- analyze_strand(DT[["3END_plus"]], DT[["5END_plus"]], -9, 10, 1)
+  # Antisense: -10 to +9, target -1
+  m <- analyze_strand(DT[["3END_minus"]], DT[["5END_minus"]], -10, 9, -1)
+  
+  if (is.null(p) && is.null(m)) return(NULL)
+  
+  data.frame(
+    TE = currTE,
+    z_sense = if(!is.null(p)) p$z else NA,
+    res_sense = if(!is.null(p)) p$res else NA,
+    mean_sense = if(!is.null(p)) p$m else NA,
+    median_sense = if(!is.null(p)) p$M else NA,
+    sd_sense = if(!is.null(p)) p$s else NA,
+    z_antisense = if(!is.null(m)) m$z else NA,
+    res_antisense = if(!is.null(m)) m$res else NA,
+    mean_antisense = if(!is.null(m)) m$m else NA,
+    median_antisense = if(!is.null(m)) m$M else NA,
+    sd_antisense = if(!is.null(m)) m$s else NA,
+    stringsAsFactors = FALSE
+  )
+}
+
+tic("Optimized Processing")
+# Use mc.preschedule = TRUE for many small TEs to reduce overhead
+results_phasing <- mclapply(TEs, process_TE_phasing_fast, 
+                    mc.cores = detectCores() - 1, 
+                    mc.preschedule = FALSE)
+toc()
+
+# Combine results
+ results_df_phasing <- rbindlist(results_phasing) %>%
+   filter(!is.na(median_sense) | !is.na(median_antisense)) 
+
+cat("\n========================================\n")
+cat("Processing complete!\n")
+cat("========================================\n")
+cat("Total TEs processed:", length(TEs), "\n")
+cat("Valid results:", nrow(results_df_phasing), "\n")
+cat("Total time:", round(total_time$toc - total_time$tic, 2), "seconds\n")
+cat("========================================\n\n")
+
+if(nrow(results_df_phasing) > 0) {
+  summary_stats <- results_df_phasing %>%
+    mutate(TYPEdetail = if_else(grepl("FBgn", TE), "GENE", "TE")) %>%
+    group_by(TYPEdetail) %>%
+    summarise(
+      mean_z_sense = mean(z_sense, na.rm = TRUE),
+      median_z_sense = median(z_sense, na.rm = TRUE),
+      mean_z_antisense = mean(z_antisense, na.rm = TRUE),
+      median_z_antisense = median(z_antisense, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  cat("Summary of z-scores:\n")
+  print(summary_stats)
+  
+  write_tsv(results_df_phasing, "GL_phasing_results.txt")
+}
+
+```
+
+```{r plot phasing}
+
+p = results_df_phasing %>%
+  mutate(
+    TYPEdetail = case_when(
+      grepl("FBgn",TE) ~ "GENE",
+      TRUE ~ "TE"
+    )
+  )%>%
+  filter(res_sense>0.1, median_sense>0.01)%>%
+  ggplot(aes(x=TYPEdetail, y=z_sense))+
+  geom_quasirandom()+
+    stat_summary(
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  stat_summary(
+  fun = median,
+  geom = "text",
+  aes(label = sprintf("%.2f", after_stat(y))),
+  vjust = -0.5,
+  size = 3,
+  color = "red"
+  )
+  
+print(p)
+ggsave("GL_phasing.pdf", width = 6, height = 4)
+
+results_df_phasing %>%
+  mutate(
+    TYPEdetail = case_when(
+      grepl("FBgn",TE) ~ "GENE",
+      TRUE ~ "TE"
+    )
+  )%>%
+  filter(res_sense>0.01, median_sense>0.01)%>%
+  group_by(TYPEdetail) %>%
+  summarise(
+    mean_z = mean(z_sense),
+    median_z = median(z_sense),
+    .groups = "drop"
+  )
+
+
+print(p)
+
+```
