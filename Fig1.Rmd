@@ -10,6 +10,7 @@ output:
 ```{r setup, include=TRUE}
 knitr::opts_chunk$set(echo = TRUE)
 
+
 if (knitr::is_latex_output()) {
   MODE <- "PDF"
 } else if (knitr::is_html_output()) {
@@ -414,7 +415,75 @@ p= PLOTtable %>%
 print(p)
 
 ggsave("biogenesis-efficiency.pdf", p, width = 3.8, height = 5, units = "in", dpi = 300)
+
+
+
+PLOTtable = TABLEfilt %>%
+  select(FBgn, TYPE, `TTnorm_sRNAdata_average-WT`,`RNAnorm_sRNAdata_average-WT`)%>%
+  separate(FBgn, c("CLUSTER","PosInCluster"), sep = "-", remove = FALSE)%>%
+  mutate(
+    CLUSTER = case_when(
+      TYPE == "CLUSTER" ~ CLUSTER,
+      TRUE ~ "other-source-loci"
+    ),
+    dotSIZE = case_when(
+      TYPE == "CLUSTER" ~ 1.5,
+      TRUE ~ 0.01
+    )
+  )
+
+# First, get the unique clusters excluding "other-source-loci"
+
+n_clusters <- length(unique(PLOTtable$CLUSTER[PLOTtable$CLUSTER != "other-source-loci"]))
+
+# Create the color palette
+okabe_ito <- as.character(paletteer_d("colorblindr::OkabeIto"))
+cluster_colors <- c(okabe_ito[1:n_clusters], "black")
+
+PLOTtable$TYPE <- factor(PLOTtable$TYPE,
+                         levels = c("CDS", "UTR", "CLUSTER"))
+
+p= PLOTtable %>%
+  pivot_longer(cols = c(`TTnorm_sRNAdata_average-WT`,`RNAnorm_sRNAdata_average-WT`), names_to = "NORMtype", values_to = "COUNT")%>%
+  ggplot(aes(x=TYPE,y=COUNT,colour = TYPE, shape=CLUSTER))+
+  # geom_point()+
+  geom_quasirandom_rast( aes(size=dotSIZE), alpha=1, varwidth = TRUE, groupOnX = TRUE )+
+  scale_y_log10(limits=c(0.001,300))+
+  # scale_color_igv()+
+  scale_color_manual(values = c("CDS" = "#0274b3", "UTR" = "#343991" , "CLUSTER" = "#e6a025" )) +  # Add this line
+  scale_size_identity()+
+  scale_shape_manual(values = c("other-source-loci" = 19, "flam" = 15, "20A" = 17, "77B" = 18))+
+  stat_summary(
+    aes(group = TYPE),
+    fun = median, 
+    geom = "crossbar", 
+    width = 0.5, 
+    fatten = 1.5, 
+    color = "red"
+  ) +
+  stat_summary(
+    fun = median,
+    geom = "text",
+    aes(group = TYPE, label = sprintf("%.2f", after_stat(y))),
+    vjust = -0.5,
+    size = 3,
+    color = "red"
+  )+  coord_cartesian(clip = "off")+
+  annotation_logticks(sides = "l", outside=TRUE) +
+  facet_row(~NORMtype)+
+  theme_cowplot(12)+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank()
+  )+
+  {}
+
+print(p)
+ggsave("biogenesis-efficiency.clusterSPLIT.pdf", p, width = 4.3, height = 5, units = "in", dpi = 300)
+
 ```
+
 ## biogenesis efficiency in YB-depleted conditions
 ```{r biogenesis-efficiency comparison - plot-biogenesis-efficiency siYB, echo=TRUE, message=FALSE, warning=FALSE, fig.width=6, fig.height=5}
 
@@ -771,6 +840,78 @@ p = plotTABLE %>%
 print(p)
 ggsave("piRNA-efficiency-vs-YB-dependency.pdf", p, width = 5, height = 5, units = "in", dpi = 300)
   
+
+```
+
+
+## compare piRNA biogenesis efficiency with DGE
+```{r biogenesis-factor screening - compare piRNA biogenesis efficiency with DGE, echo=TRUE, message=FALSE, warning=FALSE, fig.width=5, fig.height=7}
+
+TABLEfilt= RAW %>%
+filter(TYPE %in% c("CDS","UTR", "CLUSTER")) %>%
+filter(!str_detect(FBgn, "GL")) %>%
+mutate(LENGTHds500=LENGTH-500)%>%
+mutate(NUC_GC = fullLENGTH_NUC_C + fullLENGTH_NUC_G)%>%
+#filters implemented for the study
+filter(UNIQ > 50, RNAseq_RPKM>5 ) %>%
+{}
+
+#calculate RNAseq/TTseq corrected smallRNA and CLIP counts
+TABLEfilt <- TABLEfilt %>%
+mutate(
+across(
+starts_with(c("sRNAdata_")),~.x / TTseq_RPKM, 
+.names = "TTnorm_{.col}"),
+across(
+starts_with(c("sRNAdata_")),
+~.x / RNAseq_RPKM,
+.names = "RNAnorm_{.col}"
+),
+)
+
+BINdata = TABLEfilt %>%
+select(FBgn, TYPE, `TTnorm_sRNAdata_average-WT`,`RNAnorm_sRNAdata_average-WT`,`TTnorm_sRNAdata_average-YB`,`RNAnorm_sRNAdata_average-YB`,`TTnorm_sRNAdata_average-ARMI`,`RNAnorm_sRNAdata_average-ARMI` )%>%  filter(TYPE == "UTR") %>%
+  mutate(
+    BINwt = cut_interval(log10(`TTnorm_sRNAdata_average-WT`), n = 4)
+  )
+
+DGE_YB = read_tsv("DGE_siLuc_vs_siYB_PA.txt")
+IDconversion = read_tsv("fbgn_annotation_ID_fb_2026_02.tsv")
+
+DGE_YB_FBgn = left_join(DGE_YB, IDconversion, by=join_by("gene_id" == "ID"))%>%
+filter(! is.na(FBgn))%>%
+filter(baseMean >= 10) %>%      # or another sensible cutoff, e.g. from a MA-plot inspection
+select(FBgn, log2FoldChange)%>%
+#rename log2FoldChange column
+rename(log2FoldChange_YB = log2FoldChange)
+
+TABLEmerged = left_join(BINdata, DGE_YB_FBgn, by="FBgn")
+
+p = TABLEmerged %>%
+# pivot_longer(cols = starts_with("log2FoldChange"), names_to = "LIB", values_to = "lob2FoldChange")%>%
+ggplot(aes( x=`RNAnorm_sRNAdata_average-WT`, log2FoldChange_YB ))+
+geom_point_rast(size=0.3, alpha=0.3,color="#343991")+
+geom_smooth(data=. %>% filter(`RNAnorm_sRNAdata_average-WT`>0.01), aes(y=log2(`RNAnorm_sRNAdata_average-YB`/`RNAnorm_sRNAdata_average-WT`)),color="#343991")+
+scale_x_log10()+
+# facet_col(~LIB)+
+coord_cartesian(clip = "off")+
+annotation_logticks(sides = "b", outside=FALSE) +
+theme_cowplot(14)+
+geom_hline(yintercept=0, color="red", linetype = "dotted")+
+theme(
+panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(),
+axis.text = element_text(size = 12),
+axis.title = element_text(size = 12),
+legend.position = "none",
+# aspect.ratio = 1,
+strip.background = element_blank()
+)
+
+print(p)
+
+ggsave("biogenesis-eff_vs_RNA-DGE.pdf", p, width = 3, height = 6)
+
 
 ```
 
